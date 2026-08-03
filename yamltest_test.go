@@ -56,10 +56,16 @@ var yamlTestSuite embed.FS
 // then an optional comment) and a malformed header — text after the indicator, a
 // 0 or multi-digit indent — is rejected (a plain scalar may not open with a block
 // indicator). Baseline now 332/402 (82.59%), 0 panics, accept 305/308, 70 gaps.
-// The remaining gaps break down as:
-//   - Ill-formed input NOT rejected (67): the loader still accepts malformed
-//     block-structure YAML it should reject (bad indentation, duplicate/compound
-//     keys, tab after an indicator, trailing content, unterminated/lax scalars).
+// COMPOUND-KEY phase (2026-08-03): an inline mapping value that still carries a
+// top-level "key: " separator ("a: b: c", "a: 'b': c") — a second entry fused on
+// without a line break — is now rejected, using a flow- and quote-aware colon scan
+// so nested flow collections and quoted scalars are not misread. Baseline now
+// 335/402 (83.33%), 0 panics, accept 305/308, 67 gaps. The remaining gaps break
+// down as:
+//   - Ill-formed input NOT rejected (64): the loader still accepts malformed
+//     block-structure YAML it should reject (bad indentation, tab after an
+//     indicator, trailing content, unterminated/lax multi-line scalars) — most of
+//     which need multi-line plain/quoted scalar folding to close safely.
 //     This input-validation gap is now the priority.
 //   - Well-formed input NOT loaded (3): 6CA3 (a lone tab-indented flow bracket),
 //     DK95/04 and Y79Y/002 (tab-only lines in constructs the line-based loader
@@ -73,12 +79,12 @@ var yamlSuiteKnownFailing = map[string]bool{
 	"BD7L": true, "BF9H": true, "BS4K": true, "C2SP": true, "CML9": true, "CQ3W": true,
 	"CTN5": true, "CVW2": true, "CXX2": true, "D49Q": true, "DK4H": true, "DK95/04": true,
 	"DMG6": true, "EW3V": true, "G5U8": true, "G7JE": true, "G9HC": true, "GDY7": true,
-	"GT5M": true, "H7J7": true, "HRE5": true, "HU3P": true, "JKF3": true, "JY7Z": true,
-	"LHL4": true, "MUS6/01": true, "N4JP": true, "Q4CL": true, "QB6E": true, "QLJ7": true,
-	"RXY3": true, "S98Z": true, "SR86": true, "SU5Z": true, "SU74": true, "SY6V": true,
-	"TD5N": true, "U44R": true, "U99R": true, "W9L4": true, "Y79Y/002": true, "Y79Y/004": true,
-	"Y79Y/005": true, "Y79Y/006": true, "Y79Y/007": true, "Y79Y/008": true, "Y79Y/009": true, "YJV2": true,
-	"ZCZ6": true, "ZL4Z": true, "ZVH3": true, "ZXT5": true,
+	"GT5M": true, "H7J7": true, "HRE5": true, "HU3P": true, "JKF3": true, "LHL4": true,
+	"MUS6/01": true, "N4JP": true, "Q4CL": true, "QB6E": true, "QLJ7": true, "RXY3": true,
+	"S98Z": true, "SR86": true, "SU5Z": true, "SU74": true, "SY6V": true, "TD5N": true,
+	"U44R": true, "U99R": true, "W9L4": true, "Y79Y/002": true, "Y79Y/004": true, "Y79Y/005": true,
+	"Y79Y/006": true, "Y79Y/007": true, "Y79Y/008": true, "Y79Y/009": true, "YJV2": true, "ZVH3": true,
+	"ZXT5": true,
 }
 
 // safeLoad calls Load, converting a panic into a flagged result so one broken
