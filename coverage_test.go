@@ -712,3 +712,22 @@ func TestBlockScalarHeader(t *testing.T) {
 		}
 	}
 }
+
+// TestCompoundColonValue covers the rejection of a second mapping entry fused into
+// an inline value and the flow/quote-aware colon scan that avoids false positives.
+func TestCompoundColonValue(t *testing.T) {
+	// Fused entries are rejected, including a quoted inner key.
+	for _, src := range []string{"a: b: c: d\n", "a: 'b': c\n", "k: \"q\" x: y\n"} {
+		if _, err := Load(src); err == nil {
+			t.Errorf("Load(%q) accepted, want rejection", src)
+		}
+	}
+	// A flow value that legitimately carries "key: value" pairs, even behind an
+	// anchor, is NOT misread as a fused entry.
+	if _, err := Load("center: &o {x: 1, y: 2}\n"); err != nil {
+		t.Errorf("anchored flow value: %v", err)
+	}
+	if _, err := Load("m: [a, b]\n"); err != nil {
+		t.Errorf("flow seq value: %v", err)
+	}
+}

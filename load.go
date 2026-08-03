@@ -490,12 +490,21 @@ func (l *loader) parseMapping(indent int, tag string) Value {
 			}
 			continue
 		}
-		if style, chomp, ok := l.blockScalarHeader(strings.TrimSpace(val)); ok {
+		val = strings.TrimSpace(val)
+		if _, _, body := splitTagAnchor(val); topColon(body) >= 0 {
+			// An inline value that still holds a "key: " separator at the top level is
+			// a second mapping entry fused onto the first without a line break —
+			// "a: b: c", "a: 'b': c" — which block YAML does not allow. topColon skips
+			// quoted spans and flow-collection interiors (which carry their own pairs),
+			// so a flow value or a quoted scalar is not misread.
+			l.fail("nested mapping in a plain scalar value")
+		}
+		if style, chomp, ok := l.blockScalarHeader(val); ok {
 			l.pos++
 			h.Set(key, l.parseBlockScalar(style, chomp, indent))
 			continue
 		}
-		l.lines[l.pos].content = strings.TrimSpace(val)
+		l.lines[l.pos].content = val
 		l.lines[l.pos].indent = indent + 1
 		h.Set(key, l.parseNode(indent+1))
 	}
@@ -997,6 +1006,37 @@ func mapColon(content string) int {
 			quote = c
 		case ':':
 			if i == len(content)-1 || content[i+1] == ' ' {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// topColon is like mapColon but also skips flow-collection interiors: it returns
+// the index of a "key: " (or trailing ":") separator that sits at flow depth 0 and
+// outside any quote, or -1. It is used to spot a second mapping entry fused into a
+// plain inline value without counting the pairs inside a nested flow collection.
+func topColon(content string) int {
+	depth := 0
+	var quote byte
+	for i := 0; i < len(content); i++ {
+		c := content[i]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"':
+			quote = c
+		case '[', '{':
+			depth++
+		case ']', '}':
+			depth--
+		case ':':
+			if depth == 0 && (i == len(content)-1 || content[i+1] == ' ') {
 				return i
 			}
 		}
