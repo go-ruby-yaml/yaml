@@ -46,11 +46,16 @@ var yamlTestSuite embed.FS
 // tab pre-scan (which rejected any tab after leading spaces, wrongly failing the
 // many valid documents that carry a tab inside a scalar or block-scalar body) was
 // replaced by a contextual check — a tab is rejected only when it indents a block
-// mapping sibling, exactly where YAML forbids it. Baseline now 320/402 (79.60%),
-// 0 panics, accept 305/308, 82 gaps. The remaining gaps break down as:
-//   - Ill-formed input NOT rejected (79): the loader still accepts malformed
+// mapping sibling, exactly where YAML forbids it. DIRECTIVE phase (2026-08-03):
+// the leading "%…" directive block is now parsed and validated — a malformed or
+// repeated %YAML version, a directive block with no document after it, and a
+// %YAML/%TAG directive reopened after the first document's content (without the
+// "..." end marker) are rejected; %TAG and unknown directives are tolerated.
+// Baseline now 328/402 (81.59%), 0 panics, accept 305/308, 74 gaps. The remaining
+// gaps break down as:
+//   - Ill-formed input NOT rejected (71): the loader still accepts malformed
 //     block-structure YAML it should reject (bad indentation, duplicate/compound
-//     keys, directive misuse, block-scalar header junk, tab after an indicator).
+//     keys, block-scalar header junk, tab after an indicator, trailing content).
 //     This input-validation gap is now the priority.
 //   - Well-formed input NOT loaded (3): 6CA3 (a lone tab-indented flow bracket),
 //     DK95/04 and Y79Y/002 (tab-only lines in constructs the line-based loader
@@ -60,18 +65,17 @@ var yamlTestSuite embed.FS
 var yamlSuiteKnownFailing = map[string]bool{
 	"236B": true, "2CMS": true, "2G84/00": true, "2G84/01": true, "3HFZ": true, "4HVU": true,
 	"4JVG": true, "55WF": true, "5LLU": true, "5TRB": true, "5U3A": true, "6CA3": true,
-	"6S55": true, "7LBH": true, "7MNF": true, "8XDJ": true, "9CWY": true, "9HCY": true,
-	"9KBC": true, "9MAG": true, "9MMA": true, "9MQT/01": true, "B63P": true, "BD7L": true,
-	"BF9H": true, "BS4K": true, "C2SP": true, "CML9": true, "CQ3W": true, "CTN5": true,
-	"CVW2": true, "CXX2": true, "D49Q": true, "DK4H": true, "DK95/04": true, "DMG6": true,
-	"EB22": true, "EW3V": true, "G5U8": true, "G7JE": true, "G9HC": true, "GDY7": true,
-	"GT5M": true, "H7J7": true, "H7TQ": true, "HRE5": true, "HU3P": true, "JKF3": true,
-	"JY7Z": true, "LHL4": true, "MUS6/00": true, "MUS6/01": true, "N4JP": true, "Q4CL": true,
-	"QB6E": true, "QLJ7": true, "RHX7": true, "RXY3": true, "S4GJ": true, "S98Z": true,
-	"SF5V": true, "SR86": true, "SU5Z": true, "SU74": true, "SY6V": true, "TD5N": true,
-	"U44R": true, "U99R": true, "W9L4": true, "X4QW": true, "Y79Y/002": true, "Y79Y/004": true,
-	"Y79Y/005": true, "Y79Y/006": true, "Y79Y/007": true, "Y79Y/008": true, "Y79Y/009": true, "YJV2": true,
-	"ZCZ6": true, "ZL4Z": true, "ZVH3": true, "ZXT5": true,
+	"6S55": true, "7LBH": true, "7MNF": true, "8XDJ": true, "9CWY": true, "9KBC": true,
+	"9MAG": true, "9MQT/01": true, "BD7L": true, "BF9H": true, "BS4K": true, "C2SP": true,
+	"CML9": true, "CQ3W": true, "CTN5": true, "CVW2": true, "CXX2": true, "D49Q": true,
+	"DK4H": true, "DK95/04": true, "DMG6": true, "EW3V": true, "G5U8": true, "G7JE": true,
+	"G9HC": true, "GDY7": true, "GT5M": true, "H7J7": true, "HRE5": true, "HU3P": true,
+	"JKF3": true, "JY7Z": true, "LHL4": true, "MUS6/01": true, "N4JP": true, "Q4CL": true,
+	"QB6E": true, "QLJ7": true, "RXY3": true, "S4GJ": true, "S98Z": true, "SR86": true,
+	"SU5Z": true, "SU74": true, "SY6V": true, "TD5N": true, "U44R": true, "U99R": true,
+	"W9L4": true, "X4QW": true, "Y79Y/002": true, "Y79Y/004": true, "Y79Y/005": true, "Y79Y/006": true,
+	"Y79Y/007": true, "Y79Y/008": true, "Y79Y/009": true, "YJV2": true, "ZCZ6": true, "ZL4Z": true,
+	"ZVH3": true, "ZXT5": true,
 }
 
 // safeLoad calls Load, converting a panic into a flagged result so one broken

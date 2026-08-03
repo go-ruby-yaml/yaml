@@ -61,10 +61,114 @@ func load(src string) (v Value, err error) {
 	}()
 	l.tokenize(src)
 	l.skipBlanks()
+	l.parseDirectives()
 	if l.pos >= len(l.lines) {
 		return nil, nil
 	}
-	return l.parseDocument(), nil
+	v = l.parseDocument()
+	l.checkNoTrailingDirective()
+	return v, nil
+}
+
+// parseDirectives consumes a leading run of "%…" directive lines (the directive
+// block that precedes the first document) and validates it. A %YAML directive
+// must carry exactly one well-formed version (optionally trailed by a comment)
+// and may not repeat; other directives (%TAG, unknown) are tolerated. A directive
+// block must be closed by a "---" document-start marker — directives with no
+// document following are rejected. The cursor is left on that marker (or, when
+// there were no directives, wherever it started).
+func (l *loader) parseDirectives() {
+	seenYAML, saw := false, false
+	for l.pos < len(l.lines) && strings.HasPrefix(l.lines[l.pos].content, "%") {
+		l.checkDirective(l.lines[l.pos].content, &seenYAML)
+		saw = true
+		l.pos++
+		for l.pos < len(l.lines) && isBlankContent(l.lines[l.pos].content) {
+			l.pos++ // a blank or whitespace-only (e.g. a lone tab) line separates
+		}
+	}
+	if !saw {
+		return
+	}
+	if l.pos >= len(l.lines) {
+		l.fail("directives must be followed by a document")
+	}
+	if c := l.lines[l.pos].content; c != "---" && !strings.HasPrefix(c, "--- ") {
+		l.fail("directives must be followed by a document")
+	}
+}
+
+// isBlankContent reports whether a line's content is empty or only whitespace
+// (spaces or tabs) — a line that carries no node.
+func isBlankContent(s string) bool {
+	return strings.TrimLeft(s, " \t") == ""
+}
+
+// checkDirective validates one directive line. Only %YAML is constrained; %TAG
+// and unknown directives are accepted verbatim (Psych ignores unknown directives
+// with a warning).
+func (l *loader) checkDirective(content string, seenYAML *bool) {
+	fields := strings.Fields(content)
+	if fields[0] != "%YAML" {
+		return
+	}
+	if *seenYAML {
+		l.fail("%YAML directive may not repeat")
+	}
+	*seenYAML = true
+	if len(fields) < 2 || !isYAMLVersion(fields[1]) {
+		l.fail("malformed %YAML directive")
+	}
+	if len(fields) > 2 && !strings.HasPrefix(fields[2], "#") {
+		l.fail("malformed %YAML directive")
+	}
+}
+
+// isYAMLVersion reports whether s is a "major.minor" version number.
+func isYAMLVersion(s string) bool {
+	dot := strings.IndexByte(s, '.')
+	if dot <= 0 || dot >= len(s)-1 {
+		return false
+	}
+	return allDigits(s[:dot]) && allDigits(s[dot+1:])
+}
+
+// allDigits reports whether s is non-empty and entirely ASCII digits.
+func allDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// checkNoTrailingDirective rejects a %YAML / %TAG directive that opens a second
+// directive+document block right after the first document's content, without the
+// intervening "..." end marker YAML requires (e.g. "scalar\n%YAML 1.2\n---").
+// It fires only when a "---" marker follows the stray directive; a lone trailing
+// "%…" line with no document after it is a plain-scalar continuation, not a
+// directive, and is left alone.
+func (l *loader) checkNoTrailingDirective() {
+	l.skipBlanks()
+	if l.pos >= len(l.lines) || !isKnownDirective(l.lines[l.pos].content) {
+		return
+	}
+	for i := l.pos + 1; i < len(l.lines); i++ {
+		if c := l.lines[i].content; c == "---" || strings.HasPrefix(c, "--- ") {
+			l.fail("directive after document content")
+		}
+	}
+}
+
+// isKnownDirective reports whether content is a %YAML or %TAG directive line.
+func isKnownDirective(content string) bool {
+	for _, name := range []string{"%YAML", "%TAG"} {
+		if content == name || strings.HasPrefix(content, name+" ") {
+			return true
+		}
+	}
+	return false
 }
 
 // parseDocument parses the first document of the stream, honouring a leading
