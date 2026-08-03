@@ -639,3 +639,46 @@ func TestTabContextual(t *testing.T) {
 		t.Errorf("error type = %T", err)
 	}
 }
+
+// TestDirectives covers the leading directive-block validation and the
+// directive-after-content check.
+func TestDirectives(t *testing.T) {
+	// Well-formed: a single %YAML with a version, then a document.
+	if _, err := Load("%YAML 1.2\n--- text\n"); err != nil {
+		t.Errorf("valid %%YAML: %v", err)
+	}
+	// %TAG and unknown directives are tolerated.
+	if _, err := Load("%TAG !e! tag:example.com,2000:app/\n---\nok\n"); err != nil {
+		t.Errorf("valid %%TAG: %v", err)
+	}
+	if _, err := Load("%FOO bar baz\n---\nok\n"); err != nil {
+		t.Errorf("unknown directive: %v", err)
+	}
+	// A lone tab line between a directive and the marker is whitespace.
+	if _, err := Load("%YAML 1.2\n\t\n---\n"); err != nil {
+		t.Errorf("whitespace between directive and marker: %v", err)
+	}
+	// Rejections.
+	for _, src := range []string{
+		"%YAML 1.2\n%YAML 1.2\n---\n",    // repeated %YAML
+		"%YAML 1.2 foo\n---\n",           // extra token
+		"%YAML 1.1#c\n---\n",             // malformed version
+		"%YAML 12\n---\n",                // version with no '.'
+		"%YAML 1.\n---\n",                // version with a trailing '.'
+		"%YAML\n---\n",                   // missing version
+		"%YAML 1.2\n",                    // no document after directives
+		"%YAML 1.2\nplain\n",             // directive not followed by a marker
+		"scalar\n%YAML 1.2\n---\nnext\n", // directive reopened after content
+	} {
+		if _, err := Load(src); err == nil {
+			t.Errorf("Load(%q) accepted, want rejection", src)
+		} else if _, ok := err.(*SyntaxError); !ok {
+			t.Errorf("Load(%q) error type = %T", src, err)
+		}
+	}
+	// A trailing "%YAML" with no following document marker is a plain-scalar
+	// continuation, not a directive: accepted.
+	if _, err := Load("---\nscalar\n%YAML 1.2\n"); err != nil {
+		t.Errorf("trailing %%YAML continuation: %v", err)
+	}
+}
