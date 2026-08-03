@@ -621,3 +621,21 @@ func TestFlowMultiline(t *testing.T) {
 	assertParseError(func() { l.parseFlowSeq("[") })
 	assertParseError(func() { l.parseFlowMap("{") })
 }
+
+// TestTabContextual covers the contextual tab rule that replaced the coarse
+// whole-source pre-scan: a tab used to indent a block-mapping sibling is rejected,
+// but a tab living inside a block-scalar body (or otherwise not indenting block
+// structure) is accepted.
+func TestTabContextual(t *testing.T) {
+	// A tab in a literal block-scalar body is content, not indentation -> loads.
+	m := mustLoad(t, "foo: |-\n \tbar\n").(*Map)
+	if v, _ := m.Get("foo"); v != "\tbar" {
+		t.Errorf("tab in block body = %#v", v)
+	}
+	// A tab indenting a sibling mapping key is rejected.
+	if _, err := Load("a:\n\tb: 1\n"); err == nil {
+		t.Fatal("expected tab-indentation error")
+	} else if _, ok := err.(*SyntaxError); !ok {
+		t.Errorf("error type = %T", err)
+	}
+}

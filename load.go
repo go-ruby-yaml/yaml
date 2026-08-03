@@ -59,9 +59,6 @@ func load(src string) (v Value, err error) {
 			v, err = nil, &SyntaxError{Message: r.(parseError).msg}
 		}
 	}()
-	if err := checkTabs(src); err != nil {
-		return nil, err
-	}
 	l.tokenize(src)
 	l.skipBlanks()
 	if l.pos >= len(l.lines) {
@@ -123,25 +120,6 @@ func (l *loader) checkStreamEnd() {
 	}
 	l.fail("trailing content after document")
 }
-
-// checkTabs rejects a source that uses a tab character for line indentation,
-// which YAML (and Psych) forbid; this is the one structural error the loader
-// reports, the rest of the grammar being deliberately tolerant.
-func checkTabs(src string) error {
-	for _, raw := range strings.Split(src, "\n") {
-		i := 0
-		for i < len(raw) && raw[i] == ' ' {
-			i++
-		}
-		if i < len(raw) && raw[i] == '\t' {
-			return errTabIndent
-		}
-	}
-	return nil
-}
-
-// errTabIndent is returned by Load / SafeLoad for tab-indented input.
-var errTabIndent = &SyntaxError{Message: "found a tab character used for indentation"}
 
 // SyntaxError is the error type Load / SafeLoad return for a malformed document
 // (mirroring Psych::SyntaxError). It carries a human-readable message.
@@ -348,6 +326,13 @@ func (l *loader) parseMapping(indent int, tag string) Value {
 		ln := l.lines[l.pos]
 		if ln.indent != indent {
 			break
+		}
+		if ln.content != "" && ln.content[0] == '\t' {
+			// The tokenizer strips only leading spaces, so a sibling entry whose
+			// content still opens with a tab used that tab for indentation — which
+			// YAML forbids. (Tabs inside a scalar or block-scalar body reach this
+			// point never: those lines are consumed by their own reader.)
+			l.fail("found a tab character used for indentation")
 		}
 		if key, ok := l.explicitKey(ln, indent); ok {
 			val := l.explicitValue(indent)
