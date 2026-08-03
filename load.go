@@ -188,7 +188,7 @@ func (l *loader) parseDocument() Value {
 			}
 			return l.parseNode(0)
 		}
-		if style, chomp, ok := blockScalarTag(rest); ok {
+		if style, chomp, ok := l.blockScalarHeader(rest); ok {
 			l.pos = markerPos + 1
 			return l.parseBlockScalar(style, chomp, first.indent)
 		}
@@ -259,20 +259,53 @@ func (l *loader) tokenize(src string) {
 	}
 }
 
-// blockScalarTag reports whether content is a literal / folded block-scalar
-// indicator, returning the style byte ('|' or '>') and chomp ('-', '+', or 0).
+// blockScalarTag parses a block-scalar header, reporting the style byte ('|' or
+// '>') and chomp ('-', '+', or 0) of a WELL-FORMED header. The header is the
+// indicator optionally followed, in either order, by a single explicit-indent
+// digit (1–9) and a single chomping indicator, then optional trailing whitespace
+// and a "# comment". ok is false when content does not open with '|'/'>' at all OR
+// when it does but the header is malformed (a 0 or multi-digit indent, a repeated
+// indicator, or trailing junk). content must open with '|' or '>' (the caller,
+// blockScalarHeader, guarantees it).
 func blockScalarTag(content string) (style, chomp byte, ok bool) {
+	style = content[0]
+	rest := content[1:]
+	i, sawIndent, sawChomp := 0, false, false
+	for i < len(rest) {
+		c := rest[i]
+		if (c == '+' || c == '-') && !sawChomp {
+			sawChomp, chomp = true, c
+			i++
+			continue
+		}
+		if c >= '1' && c <= '9' && !sawIndent {
+			sawIndent = true
+			i++
+			continue
+		}
+		break
+	}
+	tail := rest[i:]
+	trimmed := strings.TrimLeft(tail, " \t")
+	if trimmed == "" || (strings.HasPrefix(trimmed, "#") && len(tail) > len(trimmed)) {
+		return style, chomp, true
+	}
+	return 0, 0, false
+}
+
+// blockScalarHeader parses a block-scalar header on a value/node line, rejecting a
+// malformed one. ok is false only when content does not open a block scalar at all
+// (no leading '|'/'>'); a '|'/'>' followed by an invalid header is rejected, since
+// a plain scalar may not begin with a block indicator.
+func (l *loader) blockScalarHeader(content string) (style, chomp byte, ok bool) {
 	if content == "" || (content[0] != '|' && content[0] != '>') {
 		return 0, 0, false
 	}
-	rest := content[1:]
-	if rest == "" {
-		return content[0], 0, true
+	style, chomp, valid := blockScalarTag(content)
+	if !valid {
+		l.fail("malformed block scalar header")
 	}
-	if rest == "-" || rest == "+" {
-		return content[0], rest[0], true
-	}
-	return 0, 0, false
+	return style, chomp, true
 }
 
 // parseBlockScalar reads a literal / folded block scalar whose indicator is on the
@@ -406,7 +439,7 @@ func (l *loader) parseSequence(indent int, tag string) Value {
 			}
 			continue
 		}
-		if style, chomp, ok := blockScalarTag(rest); ok {
+		if style, chomp, ok := l.blockScalarHeader(rest); ok {
 			l.pos++
 			arr = append(arr, l.parseBlockScalar(style, chomp, indent))
 			continue
@@ -457,7 +490,7 @@ func (l *loader) parseMapping(indent int, tag string) Value {
 			}
 			continue
 		}
-		if style, chomp, ok := blockScalarTag(strings.TrimSpace(val)); ok {
+		if style, chomp, ok := l.blockScalarHeader(strings.TrimSpace(val)); ok {
 			l.pos++
 			h.Set(key, l.parseBlockScalar(style, chomp, indent))
 			continue

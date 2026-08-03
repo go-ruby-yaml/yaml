@@ -456,12 +456,10 @@ func TestLoadTabError(t *testing.T) {
 
 // TestLoadFinalBranches mops up the last loader branches.
 func TestLoadFinalBranches(t *testing.T) {
-	// blockScalarTag non-chomp suffix ("|x") falls through to a plain scalar.
-	if v := mustLoad(t, "---\nk: |x\n"); v != nil {
-		m := v.(*Map)
-		if kv, _ := m.Get("k"); !eqValue(kv, "|x") {
-			t.Errorf("|x scalar = %#v", kv)
-		}
+	// A "|x" header is malformed — a plain scalar may not open with a block
+	// indicator — and is rejected.
+	if _, err := Load("---\nk: |x\n"); err == nil {
+		t.Error("expected malformed block scalar header error")
 	}
 	// A block scalar followed by a dedented sibling key (parseBlockScalar's
 	// indent<=parent break).
@@ -680,5 +678,37 @@ func TestDirectives(t *testing.T) {
 	// continuation, not a directive: accepted.
 	if _, err := Load("---\nscalar\n%YAML 1.2\n"); err != nil {
 		t.Errorf("trailing %%YAML continuation: %v", err)
+	}
+}
+
+// TestBlockScalarHeader covers the full block-scalar header grammar: explicit
+// indent and chomping indicators (in either order) with an optional comment load,
+// while a malformed header is rejected.
+func TestBlockScalarHeader(t *testing.T) {
+	// Valid headers load their body.
+	for _, src := range []string{
+		"foo: |2\n  ab\n",       // explicit indent
+		"foo: >-\n  ab\n",       // chomp only
+		"foo: |2-\n  ab\n",      // indent + chomp
+		"foo: |-2\n  ab\n",      // chomp + indent (either order)
+		"foo: | # keep\n  ab\n", // trailing comment
+	} {
+		if _, err := Load(src); err != nil {
+			t.Errorf("Load(%q): %v", src, err)
+		}
+	}
+	// Malformed headers are rejected.
+	for _, src := range []string{
+		"foo: > text\n  ab\n", // text after indicator
+		"foo: |0\n  ab\n",     // indent digit 0
+		"foo: |12\n  ab\n",    // multi-digit indent
+		"foo: |--\n  ab\n",    // repeated chomp
+		"foo: >#c\n  ab\n",    // '#' not separated by a space
+	} {
+		if _, err := Load(src); err == nil {
+			t.Errorf("Load(%q) accepted, want rejection", src)
+		} else if _, ok := err.(*SyntaxError); !ok {
+			t.Errorf("Load(%q) error type = %T", src, err)
+		}
 	}
 }
