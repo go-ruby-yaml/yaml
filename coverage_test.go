@@ -584,3 +584,40 @@ func FuzzLoadNeverPanics(f *testing.F) {
 		}
 	})
 }
+
+// TestFlowMultiline covers the multi-line flow collection assembler and its
+// validation branches: valid wrapped flow, a mapping-key flow followed by a
+// second document, single-quote doubling inside flow, and the defensive lone-
+// opener guards in parseFlowSeq / parseFlowMap.
+func TestFlowMultiline(t *testing.T) {
+	// A flow sequence wrapped across lines loads.
+	v := mustLoad(t, "- [ a,\n    b,\n    c ]\n")
+	if arr := v.([]any)[0].([]any); len(arr) != 3 {
+		t.Errorf("multi-line flow seq = %#v", arr)
+	}
+	// A flow mapping standing as the whole document, then a second document: the
+	// "---" trailer is allowed (checkStreamEnd's multi-document branch).
+	if _, err := Load("[a, b]\n---\n- c\n"); err != nil {
+		t.Errorf("flow root + second document: %v", err)
+	}
+	// Single-quote doubling inside a flow scalar ('' -> ').
+	v = mustLoad(t, "[ 'a''b' ]\n")
+	if s := v.([]any)[0].(string); s != "a'b" {
+		t.Errorf("flow single-quote doubling = %q", s)
+	}
+	// The defensive lone-opener guards: unreachable through gatherFlow (which only
+	// yields balanced strings) but retained as a safety net, exercised directly.
+	assertParseError := func(fn func()) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected parseError")
+			} else if _, ok := r.(parseError); !ok {
+				t.Fatalf("got %T", r)
+			}
+		}()
+		fn()
+	}
+	l := &loader{anchors: map[string]Value{}}
+	assertParseError(func() { l.parseFlowSeq("[") })
+	assertParseError(func() { l.parseFlowMap("{") })
+}

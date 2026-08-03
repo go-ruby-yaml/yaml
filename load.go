@@ -67,6 +67,12 @@ func load(src string) (v Value, err error) {
 	if l.pos >= len(l.lines) {
 		return nil, nil
 	}
+	return l.parseDocument(), nil
+}
+
+// parseDocument parses the first document of the stream, honouring a leading
+// "---" directives-end marker, and leaves the cursor just past it.
+func (l *loader) parseDocument() Value {
 	markerPos := l.pos
 	first := l.lines[markerPos]
 	if first.content == "---" || strings.HasPrefix(first.content, "--- ") {
@@ -77,29 +83,45 @@ func load(src string) (v Value, err error) {
 		if rest == "" {
 			l.pos = markerPos + 1
 			if l.peek() == nil {
-				return nil, nil
+				return nil
 			}
-			return l.parseNode(0), nil
+			return l.parseNode(0)
 		}
 		if style, chomp, ok := blockScalarTag(rest); ok {
 			l.pos = markerPos + 1
-			return l.parseBlockScalar(style, chomp, first.indent), nil
+			return l.parseBlockScalar(style, chomp, first.indent)
 		}
 		if tag, _, content := splitTagAnchor(rest); tag != "" && content == "" {
 			l.pos = markerPos + 1
 			if l.peek() == nil {
-				return l.taggedEmpty(tag), nil
+				return l.taggedEmpty(tag)
 			}
 			if isSeqEntry(l.peek().content) {
-				return l.parseSequence(l.peek().indent, tag), nil
+				return l.parseSequence(l.peek().indent, tag)
 			}
-			return l.parseMapping(l.peek().indent, tag), nil
+			return l.parseMapping(l.peek().indent, tag)
 		}
 		l.lines[markerPos].content = rest
 		l.lines[markerPos].indent = first.indent
-		return l.parseNode(0), nil
+		return l.parseNode(0)
 	}
-	return l.parseNode(0), nil
+	return l.parseNode(0)
+}
+
+// checkStreamEnd rejects content left over after the first document was parsed.
+// A following "---" marker starts a second document — a well-formed multi-document
+// stream, of which this loader materialises only the first — and is allowed; any
+// other unconsumed line is trailing garbage and rejects the stream.
+func (l *loader) checkStreamEnd() {
+	l.skipBlanks()
+	if l.pos >= len(l.lines) {
+		return
+	}
+	c := l.lines[l.pos].content
+	if c == "---" || strings.HasPrefix(c, "--- ") {
+		return
+	}
+	l.fail("trailing content after document")
 }
 
 // checkTabs rejects a source that uses a tab character for line indentation,
@@ -220,9 +242,11 @@ func (l *loader) parseBlockScalar(style, chomp byte, parentIndent int) Value {
 	return s
 }
 
-// parseNode parses the node whose first line is l.lines[l.pos].
+// parseNode parses the node whose first line is l.lines[l.pos]. minIndent is the
+// least indentation a continuation of this node may occupy: a multi-line flow
+// collection folded here must keep its wrapped lines at or beyond it, so a flow
+// value dedented to (or past) its own block key is rejected.
 func (l *loader) parseNode(minIndent int) Value {
-	_ = minIndent
 	l.skipBlanks()
 	ln := l.lines[l.pos]
 	tag, anchorName, content := splitTagAnchor(ln.content)
@@ -248,6 +272,16 @@ func (l *loader) parseNode(minIndent int) Value {
 		}
 	}
 	l.pos++
+	if isFlowStart(content) {
+		var isKey bool
+		content, isKey = l.gatherFlow(content, minIndent)
+		if minIndent == 0 && !isKey {
+			// A flow collection standing as the whole document consumes its closing
+			// bracket exactly; anything left but a following "---" is trailing garbage.
+			// (When the flow is a mapping key its ": value" legitimately follows.)
+			l.checkStreamEnd()
+		}
+	}
 	v := l.scalarValue(content, tag)
 	l.bind(anchorName, v)
 	return v
@@ -438,6 +472,93 @@ func parseRegexpScalar(s string) Value {
 	return &Regexp{Source: s}
 }
 
+// gatherFlow assembles a complete flow collection that may span several physical
+// lines. first is the flow-start line's content (beginning with '[' or '{') and
+// the cursor is already positioned on the following line; gatherFlow consumes
+// continuation lines until the brackets balance, joining them with a space, and
+// returns the single-line flow string that parseFlowSeq / parseFlowMap then parse.
+//
+// It is where flow input is validated: an unbalanced collection (running off the
+// end of the document), a stray closing bracket, junk after the closing bracket,
+// or a bare '#' that is not a whitespace-preceded comment all reject the document
+// with a *SyntaxError instead of being silently mis-parsed.
+func (l *loader) gatherFlow(first string, minIndent int) (string, bool) {
+	var out strings.Builder
+	depth := 0
+	var quote byte
+	line := first
+	for {
+		i := 0
+		for i < len(line) {
+			c := line[i]
+			if quote != 0 {
+				out.WriteByte(c)
+				if c == quote {
+					if quote == '\'' && i+1 < len(line) && line[i+1] == '\'' {
+						out.WriteByte('\'') // '' is an escaped quote, not a close
+						i += 2
+						continue
+					}
+					quote = 0
+				}
+				i++
+				continue
+			}
+			switch c {
+			case '\'', '"':
+				quote = c
+			case '[', '{':
+				depth++
+			case ']', '}':
+				depth--
+				if depth == 0 {
+					out.WriteByte(c)
+					return out.String(), l.checkFlowTrailer(line[i+1:])
+				}
+			case '#':
+				if i == 0 || line[i-1] == ' ' || line[i-1] == '\t' {
+					i = len(line) // a whitespace-preceded '#' comments out the rest
+					continue
+				}
+			}
+			out.WriteByte(c)
+			i++
+		}
+		l.skipBlanks()
+		if l.pos >= len(l.lines) {
+			l.fail("unterminated flow collection")
+		}
+		if l.lines[l.pos].indent < minIndent {
+			// A wrapped flow line dedented below its node's block context is not a
+			// continuation but an indentation error (e.g. a flow value pulled back to
+			// its own mapping key's column).
+			l.fail("insufficient indentation in multi-line flow collection")
+		}
+		out.WriteByte(' ') // fold the physical line break into a space
+		line = l.lines[l.pos].content
+		l.pos++
+	}
+}
+
+// checkFlowTrailer validates what follows a flow collection's closing bracket on
+// the same line and reports whether the flow is a mapping KEY. Trailing whitespace
+// and a whitespace-preceded "# comment" are fine; a ": " (or bare ":") marks the
+// flow as a mapping key (isKey=true) whose ": value" the caller leaves for the
+// block parser. Anything else is junk and rejects the document.
+func (l *loader) checkFlowTrailer(after string) (isKey bool) {
+	trimmed := strings.TrimLeft(after, " \t")
+	switch {
+	case trimmed == "":
+	case trimmed[0] == '#' && len(after) > len(trimmed):
+		// a real comment: at least one space separated it from the bracket
+	case trimmed == ":" || strings.HasPrefix(trimmed, ": "):
+		return true
+	default:
+		l.fail("trailing content after flow collection")
+	}
+	return false
+}
+
 // parseFlowSeq parses a single-line flow sequence "[a, b, c]". A lone '[' with no
 // body is rejected rather than sliced blindly (the slice would overrun).
 func (l *loader) parseFlowSeq(s string) Value {
@@ -471,9 +592,29 @@ func (l *loader) parseFlowMap(s string) Value {
 		if !ok {
 			continue
 		}
+		if isPlainFlowScalar(v) && mapColon(v) >= 0 {
+			// A plain value that still holds a "key: " separator means two entries
+			// ran together without the comma between them.
+			l.fail("missing ',' between flow-mapping entries")
+		}
 		h.Set(l.scalarValue(k, ""), l.scalarValue(v, ""))
 	}
 	return h
+}
+
+// isPlainFlowScalar reports whether s is an unquoted, non-collection, non-alias
+// flow scalar — the shape whose internals a flow parser may safely scan for a
+// stray key/value separator.
+func isPlainFlowScalar(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	switch s[0] {
+	case '"', '\'', '[', '{', '*', '&', '!':
+		return false
+	}
+	return true
 }
 
 // peek skips any blank lines at the cursor and returns the next significant line,
