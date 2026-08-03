@@ -5,6 +5,7 @@
 package yaml
 
 import (
+	"io/fs"
 	"math/big"
 	"strings"
 	"testing"
@@ -530,4 +531,56 @@ func TestLoadBlockClamp(t *testing.T) {
 	if !strings.Contains(kv.(string), "indented") {
 		t.Errorf("clamp body = %#v", kv)
 	}
+}
+
+// TestLoadUnterminatedFlow covers the robustness guard: a lone flow opener has no
+// body to slice, and the loader must reject it with a *SyntaxError rather than
+// panic on the overrunning slice. This is the fix for the yaml-test-suite panic
+// cluster (a bare '[' / '{', and the malformed multi-line flows that reduce to
+// one on the opening line).
+func TestLoadUnterminatedFlow(t *testing.T) {
+	for _, src := range []string{"[", "{", "--- [\n", "--- {\n", "k: [\n", "k: {\n"} {
+		v, err := Load(src)
+		if err == nil {
+			t.Errorf("Load(%q) = %#v, want rejection", src, v)
+			continue
+		}
+		if _, ok := err.(*SyntaxError); !ok || err.Error() == "" {
+			t.Errorf("Load(%q) error = %T (%v), want *SyntaxError", src, err, err)
+		}
+	}
+}
+
+// FuzzLoadNeverPanics asserts the loader's core robustness contract: for ANY byte
+// stream, Load returns a (value, error) pair and never panics. Seeded from a
+// spread of the malformed shapes that used to crash the parser plus the whole
+// vendored yaml-test-suite corpus, it guards the never-panic invariant against
+// regressions.
+func FuzzLoadNeverPanics(f *testing.F) {
+	seeds := []string{
+		"", "[", "{", "[[[", "{{{", "- [", "k: {", "--- [", "--- {",
+		"[a, b", "{a: 1", "]", "}", "[\n]", "{\n}", ": :", "? ?",
+		"&a *b", "!tag", "|", ">", "\"", "'", "---\n...", "%YAML",
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	err := fs.WalkDir(yamlTestSuite, "yamltest", func(p string, d fs.DirEntry, err error) error {
+		if err == nil && d.Name() == "in.yaml" {
+			if b, e := yamlTestSuite.ReadFile(p); e == nil {
+				f.Add(string(b))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		f.Fatalf("seed corpus: %v", err)
+	}
+	f.Fuzz(func(t *testing.T, src string) {
+		// A panic escaping Load fails the property outright.
+		v, err := Load(src)
+		if err != nil && v != nil {
+			t.Errorf("Load(%q) returned both value %#v and error %v", src, v, err)
+		}
+	})
 }
