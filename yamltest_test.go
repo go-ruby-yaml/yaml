@@ -36,19 +36,18 @@ var yamlTestSuite embed.FS
 // reported so the entry can be removed. Baseline captured 2026-08-03: 267/402
 // pass (66.42%), 135 gaps.
 //
-// This is the LARGEST hidden gap surfaced by this ratchet batch and warrants a
-// dedicated closing campaign. The 135 gaps break down as:
-//   - Ill-formed input NOT rejected (89): the loader accepts malformed YAML it
-//     should reject — reject conformance is only 5/94 (5.3%). This lax-parsing /
+// ROBUSTNESS phase (2026-08-03): the loader no longer panics on any input — the
+// 21 slice-overrun panics on malformed flow collections were fixed (a lone '['
+// or '{' now rejects cleanly), converting the 4 ill-formed panic cases (KS4U,
+// N782, T833, VJP3/00) into proper rejections. New baseline: 271/402 (67.41%),
+// 0 panics, 131 gaps. The remaining gaps break down as:
+//   - Ill-formed input NOT rejected (85): the loader accepts malformed YAML it
+//     should reject — reject conformance is 9/94 (9.6%). This lax-parsing /
 //     input-validation gap is the priority: a loader that accepts almost any
-//     byte stream cannot flag corrupt documents. (Includes 4 that panic on the
-//     bad input: KS4U, N782, T833, VJP3/00.)
-//   - Well-formed input NOT loaded (46): valid YAML that errors or panics —
-//     genuine parser gaps plus a few YAML 1.1/Psych corner cases (anchors,
+//     byte stream cannot flag corrupt documents.
+//   - Well-formed input NOT loaded (46): valid YAML that errors — genuine parser
+//     gaps plus a few YAML 1.1/Psych corner cases (multi-line flow, anchors,
 //     complex keys, tag/directive edge cases, multi-document streams).
-//   - Parser panics (21 total): the loader panics instead of returning an error
-//     on 21 inputs (17 well-formed, 4 ill-formed) — a robustness defect that
-//     should be the first thing fixed, independent of the schema questions.
 //
 // Each is a dedicated gap-closing target; the set may only shrink.
 var yamlSuiteKnownFailing = map[string]bool{
@@ -65,13 +64,13 @@ var yamlSuiteKnownFailing = map[string]bool{
 	"DK95/07": true, "DK95/08": true, "DMG6": true, "EB22": true, "EHF6": true, "EW3V": true,
 	"FRK4": true, "G5U8": true, "G7JE": true, "G9HC": true, "GDY7": true, "GT5M": true,
 	"H7J7": true, "H7TQ": true, "HRE5": true, "HS5T": true, "HU3P": true, "J3BT": true,
-	"JKF3": true, "JY7Z": true, "KS4U": true, "L9U5": true, "LHL4": true, "LQZ7": true,
+	"JKF3": true, "JY7Z": true, "L9U5": true, "LHL4": true, "LQZ7": true,
 	"M7NX": true, "M9B4": true, "MJS9": true, "MUS6/00": true, "MUS6/01": true, "N4JP": true,
-	"N782": true, "NB6Z": true, "P2EQ": true, "PRH3": true, "Q4CL": true, "Q5MG": true,
+	"NB6Z": true, "P2EQ": true, "PRH3": true, "Q4CL": true, "Q5MG": true,
 	"QB6E": true, "QF4Y": true, "QLJ7": true, "R4YG": true, "RHX7": true, "RXY3": true,
 	"S4GJ": true, "S98Z": true, "SF5V": true, "SR86": true, "SU5Z": true, "SU74": true,
-	"SY6V": true, "T5N4": true, "T833": true, "TD5N": true, "TL85": true, "U44R": true,
-	"U99R": true, "UV7Q": true, "VJP3/00": true, "VJP3/01": true, "W9L4": true, "WZ62": true,
+	"SY6V": true, "T5N4": true, "TD5N": true, "TL85": true, "U44R": true,
+	"U99R": true, "UV7Q": true, "VJP3/01": true, "W9L4": true, "WZ62": true,
 	"X4QW": true, "Y79Y/001": true, "Y79Y/002": true, "Y79Y/004": true, "Y79Y/005": true, "Y79Y/006": true,
 	"Y79Y/007": true, "Y79Y/008": true, "Y79Y/009": true, "YJV2": true, "ZCZ6": true, "ZF4X": true,
 	"ZL4Z": true, "ZVH3": true, "ZXT5": true,

@@ -35,10 +35,30 @@ type line struct {
 	blank   bool
 }
 
+// parseError is the sentinel a loader method panics with to reject a malformed
+// document. load recovers it and returns it as a *SyntaxError, so the parser can
+// bail out of any depth without threading an error return through every method.
+// It is the ONLY value the loader may panic with: a runtime panic (e.g. a slice
+// overrun on adversarial input) is a robustness bug, not a rejection, and must be
+// fixed at its source rather than masked here — the fuzz corpus guards that.
+type parseError struct{ msg string }
+
+// fail aborts the current parse, rejecting the document with the given message.
+func (l *loader) fail(msg string) { panic(parseError{msg: msg}) }
+
 // load parses a complete YAML document string into a Ruby value. A blank or
-// marker-only document loads as nil (Psych's empty-document behaviour).
-func load(src string) (Value, error) {
+// marker-only document loads as nil (Psych's empty-document behaviour). A
+// malformed document is rejected with a *SyntaxError; the parser never panics on
+// input, however adversarial (see parseError).
+func load(src string) (v Value, err error) {
 	l := &loader{anchors: map[string]Value{}}
+	defer func() {
+		if r := recover(); r != nil {
+			// Only a parseError is a graceful rejection; the unchecked assertion
+			// re-raises anything else so a genuine bug is never silently swallowed.
+			v, err = nil, &SyntaxError{Message: r.(parseError).msg}
+		}
+	}()
 	if err := checkTabs(src); err != nil {
 		return nil, err
 	}
@@ -418,8 +438,12 @@ func parseRegexpScalar(s string) Value {
 	return &Regexp{Source: s}
 }
 
-// parseFlowSeq parses a single-line flow sequence "[a, b, c]".
+// parseFlowSeq parses a single-line flow sequence "[a, b, c]". A lone '[' with no
+// body is rejected rather than sliced blindly (the slice would overrun).
 func (l *loader) parseFlowSeq(s string) Value {
+	if len(s) < 2 {
+		l.fail("unterminated flow sequence")
+	}
 	inner := strings.TrimSpace(s[1 : len(s)-1])
 	arr := []any{}
 	if inner == "" {
@@ -431,8 +455,12 @@ func (l *loader) parseFlowSeq(s string) Value {
 	return arr
 }
 
-// parseFlowMap parses a single-line flow mapping "{a: 1, b: 2}".
+// parseFlowMap parses a single-line flow mapping "{a: 1, b: 2}". A lone '{' with
+// no body is rejected rather than sliced blindly.
 func (l *loader) parseFlowMap(s string) Value {
+	if len(s) < 2 {
+		l.fail("unterminated flow mapping")
+	}
 	inner := strings.TrimSpace(s[1 : len(s)-1])
 	h := NewMap()
 	if inner == "" {
