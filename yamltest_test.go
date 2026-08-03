@@ -38,42 +38,41 @@ var yamlTestSuite embed.FS
 //
 // ROBUSTNESS phase (2026-08-03): the loader no longer panics on any input — the
 // 21 slice-overrun panics on malformed flow collections were fixed (a lone '['
-// or '{' now rejects cleanly), converting the 4 ill-formed panic cases (KS4U,
-// N782, T833, VJP3/00) into proper rejections. New baseline: 271/402 (67.41%),
-// 0 panics, 131 gaps. The remaining gaps break down as:
-//   - Ill-formed input NOT rejected (85): the loader accepts malformed YAML it
-//     should reject — reject conformance is 9/94 (9.6%). This lax-parsing /
-//     input-validation gap is the priority: a loader that accepts almost any
-//     byte stream cannot flag corrupt documents.
-//   - Well-formed input NOT loaded (46): valid YAML that errors — genuine parser
-//     gaps plus a few YAML 1.1/Psych corner cases (multi-line flow, anchors,
-//     complex keys, tag/directive edge cases, multi-document streams).
+// or '{' now rejects cleanly). FLOW phase (2026-08-03): multi-line flow
+// collections are now assembled across physical lines and validated — an
+// unbalanced or under-indented flow, a stray closing bracket, junk (or a bare
+// non-comment '#') after the close, and a missing ',' between entries all reject;
+// valid multi-line flows load. Baseline now 294/402 (73.13%), 0 panics, 108 gaps.
+// The remaining gaps break down as:
+//   - Ill-formed input NOT rejected (~63): the loader still accepts malformed
+//     block-structure YAML it should reject (bad indentation, duplicate/compound
+//     keys, directive misuse, block-scalar header junk). This input-validation
+//     gap is the priority.
+//   - Well-formed input NOT loaded (~45): valid YAML that errors — a tab used
+//     outside indentation (the coarse tab pre-scan over-rejects), multi-line
+//     plain/quoted scalars, anchors/merge edge cases, directive/multi-document
+//     corners.
 //
 // Each is a dedicated gap-closing target; the set may only shrink.
 var yamlSuiteKnownFailing = map[string]bool{
 	"236B": true, "2CMS": true, "2G84/00": true, "2G84/01": true, "3HFZ": true, "3RLN/02": true,
-	"3RLN/05": true, "4ABK": true, "4FJ6": true, "4H7K": true, "4HVU": true, "4JVG": true,
-	"4ZYM": true, "55WF": true, "5GBF": true, "5LLU": true, "5TRB": true, "5U3A": true,
-	"62EZ": true, "6CA3": true, "6HB6": true, "6JTT": true, "6S55": true, "7A4E": true,
-	"7LBH": true, "7MNF": true, "87E4": true, "8UDB": true, "8XDJ": true, "96NN/00": true,
-	"96NN/01": true, "9C9N": true, "9CWY": true, "9HCY": true, "9JBA": true, "9KBC": true,
-	"9MAG": true, "9MMA": true, "9MQT/01": true, "B63P": true, "BD7L": true, "BF9H": true,
-	"BS4K": true, "C2DT": true, "C2SP": true, "CML9": true, "CN3R": true, "CQ3W": true,
-	"CT4Q": true, "CTN5": true, "CVW2": true, "CXX2": true, "D49Q": true, "DFF7": true,
-	"DK4H": true, "DK95/00": true, "DK95/02": true, "DK95/03": true, "DK95/04": true, "DK95/05": true,
-	"DK95/07": true, "DK95/08": true, "DMG6": true, "EB22": true, "EHF6": true, "EW3V": true,
-	"FRK4": true, "G5U8": true, "G7JE": true, "G9HC": true, "GDY7": true, "GT5M": true,
-	"H7J7": true, "H7TQ": true, "HRE5": true, "HS5T": true, "HU3P": true, "J3BT": true,
-	"JKF3": true, "JY7Z": true, "L9U5": true, "LHL4": true, "LQZ7": true,
-	"M7NX": true, "M9B4": true, "MJS9": true, "MUS6/00": true, "MUS6/01": true, "N4JP": true,
-	"NB6Z": true, "P2EQ": true, "PRH3": true, "Q4CL": true, "Q5MG": true,
-	"QB6E": true, "QF4Y": true, "QLJ7": true, "R4YG": true, "RHX7": true, "RXY3": true,
-	"S4GJ": true, "S98Z": true, "SF5V": true, "SR86": true, "SU5Z": true, "SU74": true,
-	"SY6V": true, "T5N4": true, "TD5N": true, "TL85": true, "U44R": true,
-	"U99R": true, "UV7Q": true, "VJP3/01": true, "W9L4": true, "WZ62": true,
-	"X4QW": true, "Y79Y/001": true, "Y79Y/002": true, "Y79Y/004": true, "Y79Y/005": true, "Y79Y/006": true,
-	"Y79Y/007": true, "Y79Y/008": true, "Y79Y/009": true, "YJV2": true, "ZCZ6": true, "ZF4X": true,
-	"ZL4Z": true, "ZVH3": true, "ZXT5": true,
+	"3RLN/05": true, "4HVU": true, "4JVG": true, "4ZYM": true, "55WF": true, "5GBF": true,
+	"5LLU": true, "5TRB": true, "5U3A": true, "6CA3": true, "6HB6": true, "6S55": true,
+	"7A4E": true, "7LBH": true, "7MNF": true, "8XDJ": true, "96NN/00": true, "96NN/01": true,
+	"9CWY": true, "9HCY": true, "9KBC": true, "9MAG": true, "9MMA": true, "9MQT/01": true,
+	"B63P": true, "BD7L": true, "BF9H": true, "BS4K": true, "C2SP": true, "CML9": true,
+	"CQ3W": true, "CTN5": true, "CVW2": true, "CXX2": true, "D49Q": true, "DK4H": true,
+	"DK95/00": true, "DK95/02": true, "DK95/03": true, "DK95/04": true, "DK95/05": true, "DK95/07": true,
+	"DK95/08": true, "DMG6": true, "EB22": true, "EW3V": true, "G5U8": true, "G7JE": true,
+	"G9HC": true, "GDY7": true, "GT5M": true, "H7J7": true, "H7TQ": true, "HRE5": true,
+	"HS5T": true, "HU3P": true, "J3BT": true, "JKF3": true, "JY7Z": true, "LHL4": true,
+	"M9B4": true, "MJS9": true, "MUS6/00": true, "MUS6/01": true, "N4JP": true, "NB6Z": true,
+	"PRH3": true, "Q4CL": true, "Q5MG": true, "QB6E": true, "QLJ7": true, "R4YG": true,
+	"RHX7": true, "RXY3": true, "S4GJ": true, "S98Z": true, "SF5V": true, "SR86": true,
+	"SU5Z": true, "SU74": true, "SY6V": true, "T5N4": true, "TD5N": true, "TL85": true,
+	"U44R": true, "U99R": true, "UV7Q": true, "W9L4": true, "X4QW": true, "Y79Y/001": true,
+	"Y79Y/002": true, "Y79Y/004": true, "Y79Y/005": true, "Y79Y/006": true, "Y79Y/007": true, "Y79Y/008": true,
+	"Y79Y/009": true, "YJV2": true, "ZCZ6": true, "ZL4Z": true, "ZVH3": true, "ZXT5": true,
 }
 
 // safeLoad calls Load, converting a panic into a flagged result so one broken
