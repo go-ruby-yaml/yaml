@@ -525,11 +525,21 @@ func TestLoadFinalBranches(t *testing.T) {
 	if lv, _ := m.Get("last"); lv != nil {
 		t.Errorf("last nil value = %#v", lv)
 	}
-	// A mapping interrupted by a non-entry line at the same indent (parseMapping's
-	// !ok break): a stray sequence dash terminates the mapping.
-	m = mustLoad(t, "---\na: 1\n- stray\n").(*Map)
-	if m.Len() != 1 {
-		t.Errorf("interrupted mapping len = %d", m.Len())
+	// A nested mapping interrupted by a non-entry line (parseMapping's !ok break):
+	// the inner "a: 1" mapping ends at the outer sequence's next "- b" dash, and the
+	// document as a whole still loads.
+	seq := mustLoad(t, "- a: 1\n- b\n").([]any)
+	if len(seq) != 2 {
+		t.Errorf("interrupted nested mapping len = %d", len(seq))
+	}
+	if inner, ok := seq[0].(*Map); !ok || inner.Len() != 1 {
+		t.Errorf("interrupted nested mapping = %#v", seq[0])
+	}
+	// The same non-entry line at the DOCUMENT root, however, is trailing content the
+	// stream-end gate rejects: "a: 1" is a complete mapping and "- stray" cannot
+	// follow it at the same level.
+	if _, err := Load("---\na: 1\n- stray\n"); err == nil {
+		t.Errorf("stray dash after mapping accepted, want rejection")
 	}
 	// An empty scalar token (parsePlainScalar "" guard) via a flow item.
 	v := mustLoad(t, "--- [, x]\n")
@@ -554,6 +564,33 @@ func TestLoadEmptyExplicitAndBlock(t *testing.T) {
 	v := mustLoad(t, "---\nk: !ruby/object:Foo\nnext: 1\n").(*Map)
 	if o, _ := v.Get("k"); func() bool { _, ok := o.(*Object); return !ok }() {
 		t.Errorf("empty-body tagged value = %#v", o)
+	}
+}
+
+// TestStreamEndGate covers checkStreamEnd: trailing content after the first block
+// document rejects, while a following "---" (a second document in the stream) and a
+// trailing "..." end marker are allowed.
+func TestStreamEndGate(t *testing.T) {
+	// Trailing garbage after a complete document rejects.
+	for _, src := range []string{
+		"\"quoted\"\ntrailing\n", // a line after a closed quoted-scalar document
+		"a: 1\nb: 2\n  bad: x\n", // an over-indented orphan under a finished mapping
+		"[a, b]\nc\n",            // junk after a flow document
+	} {
+		if _, err := Load(src); err == nil {
+			t.Errorf("Load(%q) accepted, want trailing-content rejection", src)
+		} else if _, ok := err.(*SyntaxError); !ok {
+			t.Errorf("Load(%q) error type = %T", src, err)
+		}
+	}
+	// A following "---" starts a second document — the loader materialises the first
+	// and accepts the stream.
+	if v := mustLoad(t, "first\n---\nsecond\n"); !eqValue(v, "first") {
+		t.Errorf("multi-document first = %#v", v)
+	}
+	// A trailing "..." end marker (with blank lines after) is accepted.
+	if v := mustLoad(t, "done\n...\n\n"); !eqValue(v, "done") {
+		t.Errorf("end marker = %#v", v)
 	}
 }
 

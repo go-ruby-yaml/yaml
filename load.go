@@ -67,6 +67,7 @@ func load(src string) (v Value, err error) {
 	}
 	v = l.parseDocument()
 	l.checkNoTrailingDirective()
+	l.checkStreamEnd()
 	return v, nil
 }
 
