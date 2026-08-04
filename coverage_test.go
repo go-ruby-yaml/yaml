@@ -541,10 +541,15 @@ func TestLoadFinalBranches(t *testing.T) {
 	if _, err := Load("---\na: 1\n- stray\n"); err == nil {
 		t.Errorf("stray dash after mapping accepted, want rejection")
 	}
-	// An empty scalar token (parsePlainScalar "" guard) via a flow item.
-	v := mustLoad(t, "--- [, x]\n")
-	if arr := v.([]any); arr[0] != nil {
-		t.Errorf("empty flow item = %#v", arr[0])
+	// An empty scalar token (parsePlainScalar "" guard) via the empty LAST slot a
+	// single trailing comma leaves — which YAML permits; a NON-final empty entry is
+	// rejected as a malformed flow sequence.
+	v := mustLoad(t, "--- [x, ]\n")
+	if arr := v.([]any); len(arr) != 2 || arr[0] != "x" || arr[1] != nil {
+		t.Errorf("trailing-comma flow = %#v", v)
+	}
+	if _, err := Load("--- [, x]\n"); err == nil {
+		t.Errorf("leading empty flow entry accepted, want rejection")
 	}
 	// A "\"" escape inside a double-quoted scalar (unquoteDouble's '"' case).
 	if v := mustLoad(t, "--- \"a\\\"b\"\n"); !eqValue(v, "a\"b") {
