@@ -71,26 +71,38 @@ var yamlTestSuite embed.FS
 // plain scalar rejects (2CMS, EW3V, HU3P, JKF3), and the value-level colon/quote
 // scans were hardened (a mid-scalar quote is no longer read as opening a quoted
 // span; DK95/04, 6CA3, 9KBC, Y79Y/002 also fixed via whitespace-only-line and
-// block-scalar-tab handling). Baseline now 350/402 (87.06%), 0 panics, accept
-// 308/308 well-formed loaded, 52 gaps. The remaining gaps break down as:
-//   - Ill-formed input NOT rejected (64): the loader still accepts malformed
-//     block-structure YAML it should reject (bad indentation, tab after an
-//     indicator, trailing content, unterminated/lax multi-line scalars) — most of
-//     which need multi-line plain/quoted scalar folding to close safely.
-//     This input-validation gap is now the priority.
-//   - Well-formed input NOT loaded (3): 6CA3 (a lone tab-indented flow bracket),
-//     DK95/04 and Y79Y/002 (tab-only lines in constructs the line-based loader
-//     resolves differently) — genuine tab/indentation corner cases.
+// block-scalar-tab handling). Baseline 350/402 (87.06%), 0 panics, accept 308/308.
+// DQ-ESCAPE phase (2026-08-04): the double-quoted escape decoder now validates
+// against the full YAML escape table (\a \b \v \f \e \  \/ \N \_ \L \P \u \U and an
+// escaped tab, in addition to the common few) and rejects an escape indicator
+// outside it ("\." , "\'"), matching Psych/libyaml; a malformed \x/\u/\U hex
+// payload stays lenient. This graduates 55WF and HRE5. Baseline now 352/402
+// (87.56%), 0 panics, accept 308/308 well-formed loaded, 50 gaps. The remaining
+// gaps break down as:
+//   - Ill-formed input NOT rejected (~47): malformed block-structure YAML the
+//     loader still accepts — trailing content after a block document (236B, TD5N,
+//     6S55, 9CWY, BD7L, 7MNF), inconsistent block indentation (4HVU, 5U3A, DMG6,
+//     N4JP, U44R, ZVH3), anchor/tag misuse (4JVG, CXX2, G9HC, GT5M, H7J7, SR86,
+//     SU74, SY6V, U99R, LHL4), flow-collection edge cases (9MAG, CTN5, CVW2, G5U8,
+//     YJV2, C2SP, DK4H, ZXT5, CML9), stray comments (8XDJ, BS4K, GDY7), multi-line
+//     quoted/plain keys (7LBH, D49Q, G7JE), directives (MUS6/01, QLJ7), and block-
+//     scalar content indentation (5LLU, S98Z, W9L4, 3HFZ, BF9H). Most need a block-
+//     document trailing-content gate, which is entangled with multi-line node
+//     properties (an anchor/tag on its own, possibly more-indented, line),
+//     comments in every position, and flow collections used as block keys — a
+//     separate initiative from scalar folding.
+//   - Well-formed input NOT loaded: none — every well-formed corpus document now
+//     loads (accept 308/308).
 //
 // Each is a dedicated gap-closing target; the set may only shrink.
 var yamlSuiteKnownFailing = map[string]bool{
-	"236B": true, "3HFZ": true, "4HVU": true, "4JVG": true, "55WF": true,
+	"236B": true, "3HFZ": true, "4HVU": true, "4JVG": true,
 	"5LLU": true, "5U3A": true, "6S55": true, "7LBH": true,
 	"7MNF": true, "8XDJ": true, "9CWY": true, "9MAG": true,
 	"BD7L": true, "BF9H": true, "BS4K": true, "C2SP": true, "CML9": true,
 	"CTN5": true, "CVW2": true, "CXX2": true, "D49Q": true, "DK4H": true,
 	"DMG6": true, "G5U8": true, "G7JE": true, "G9HC": true, "GDY7": true,
-	"GT5M": true, "H7J7": true, "HRE5": true, "LHL4": true,
+	"GT5M": true, "H7J7": true, "LHL4": true,
 	"MUS6/01": true, "N4JP": true, "QLJ7": true,
 	"S98Z": true, "SR86": true, "SU74": true, "SY6V": true, "TD5N": true,
 	"U44R": true, "U99R": true, "W9L4": true, "Y79Y/004": true, "Y79Y/005": true,
