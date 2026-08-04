@@ -170,22 +170,19 @@ var yamlTestSuite embed.FS
 // stream-end gate rejects (GDY7). A "#" NOT preceded by whitespace stays an ordinary
 // scalar character ("this is#not: a" 2EBW still parses as a mapping). Baseline now
 // 399/402 (99.25%), accept 308/308, reject 91/94, 3 gaps.
-// The remaining gaps break down as:
-//   - Ill-formed input NOT rejected (~30): anchor/tag misuse (4JVG, CXX2, SR86,
-//     SU74, SY6V, U99R, LHL4), flow-collection edge cases (9MAG, CTN5, CVW2, G5U8,
-//     YJV2, C2SP, DK4H, ZXT5, CML9), stray comments (8XDJ, GDY7), directives
-//     (MUS6/01, QLJ7), bad block-scalar content indentation (5LLU, S98Z, W9L4, 3HFZ),
-//     inconsistent indentation (5U3A) and the Y79Y/004-008 variants. These need
-//     finer structural validation than the coarse trailing-content gate.
-//   - Well-formed input NOT loaded: none — every well-formed corpus document now
-//     loads (accept 308/308).
-//
-// Each is a dedicated gap-closing target; the set may only shrink.
-var yamlSuiteKnownFailing = map[string]bool{
-	"8XDJ": true,
-	"CML9": true,
-	"S98Z": true,
-}
+// COMMENT-LINE-PRESERVATION phase (2026-08-04): a whole-line "#" comment is now
+// retained as a comment=true marker instead of dropped, so the readers that care can
+// observe it while every structural parser still steps over it. This closes the last
+// stray-comment cases: a comment terminates a plain scalar, so a scalar continued past
+// one leaves a separate node the stream-end gate rejects ("key: word1" / "#  xxx" /
+// "  word2" — 8XDJ); a comment is literal content inside a block scalar, so its indent
+// weighs against the auto-detected body indent, tripping the over-indent check ("empty
+// block scalar: >" then spaces-only lines wider than a " # comment" content line —
+// S98Z); and a comment inside a flow that splits two plain entries with no separating
+// comma is rejected ("[ word1" / "#  xxx" / "  word2 ]" — CML9). Baseline now 402/402
+// (100.00%), accept 308/308, reject 94/94, 0 gaps — full accept/reject conformance
+// with the yaml-test-suite corpus. The ratchet is now empty; any regression fails CI.
+var yamlSuiteKnownFailing = map[string]bool{}
 
 // safeLoad calls Load, converting a panic into a flagged result so one broken
 // input cannot abort the whole differential sweep. A panic is recorded as a
