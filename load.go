@@ -261,10 +261,13 @@ func (l *loader) tokenize(src string) {
 			l.lines = append(l.lines, line{blank: true, raw: trimmed})
 			continue
 		}
-		if content == "..." || strings.HasPrefix(content, "... ") {
-			// The document-end marker "..." ends the stream this loader materialises; a
-			// trailing "# comment" after it (the only well-formed suffix) is discarded
-			// with it.
+		if content == "..." || strings.HasPrefix(content, "... ") || strings.HasPrefix(content, "...\t") {
+			// The document-end marker "..." ends the stream this loader materialises. Only
+			// a trailing "# comment" (or nothing) may follow it on its line; any other
+			// content ("... invalid") is ill-formed and rejects the stream.
+			if rest := strings.TrimLeft(content[3:], " \t"); rest != "" && !strings.HasPrefix(rest, "#") {
+				l.fail("content after document-end marker")
+			}
 			break
 		}
 		if strings.HasPrefix(content, "#") {
@@ -837,6 +840,13 @@ func (l *loader) parseMapping(indent int, tag string) Value {
 			continue
 		}
 		val = strings.TrimSpace(val)
+		if isSeqEntry(val) {
+			// A block sequence may not begin on the same line as its "key:"; its "- x"
+			// entries must start on the following, more-indented line ("key:\n  - x").
+			// (An explicit "? key" / ": value" compact sequence is a different, allowed
+			// construct handled by explicitKey / explicitValue.)
+			l.fail("block sequence on the same line as its mapping key")
+		}
 		if _, _, body := splitTagAnchor(val); !strings.HasPrefix(body, "*") && topColon(body) >= 0 {
 			// An inline value that still holds a "key: " separator at the top level is
 			// a second mapping entry fused onto the first without a line break —
