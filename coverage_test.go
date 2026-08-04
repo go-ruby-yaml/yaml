@@ -557,6 +557,53 @@ func TestLoadEmptyExplicitAndBlock(t *testing.T) {
 	}
 }
 
+// TestFlowCollectionAsBlockKey covers a flow collection ("{a: 1}") used as a
+// complex block-mapping key, whose value is the block mapping beneath it
+// (yaml-test-suite Q9WF).
+func TestFlowCollectionAsBlockKey(t *testing.T) {
+	m := mustLoad(t, "{ first: Sammy, last: Sosa }:\n  hr:  65\n  avg: 0.278\n").(*Map)
+	if m.Len() != 1 {
+		t.Fatalf("flow-key mapping len = %d", m.Len())
+	}
+	p := m.Pairs()[0]
+	key, ok := p.Key.(*Map)
+	if !ok {
+		t.Fatalf("flow key type = %T", p.Key)
+	}
+	if fv, _ := key.Get("first"); !eqValue(fv, "Sammy") {
+		t.Errorf("flow key first = %#v", fv)
+	}
+	if lv, _ := key.Get("last"); !eqValue(lv, "Sosa") {
+		t.Errorf("flow key last = %#v", lv)
+	}
+	val, ok := p.Val.(*Map)
+	if !ok {
+		t.Fatalf("flow-key value type = %T", p.Val)
+	}
+	if hr, _ := val.Get("hr"); !eqValue(hr, int64(65)) {
+		t.Errorf("flow-key value hr = %#v", hr)
+	}
+	if avg, _ := val.Get("avg"); !eqValue(avg, 0.278) {
+		t.Errorf("flow-key value avg = %#v", avg)
+	}
+	// A plain flow collection with no trailing ": " stays a scalar node, not a key.
+	if v := mustLoad(t, "[a, b]\n"); func() bool { _, ok := v.([]any); return !ok }() {
+		t.Errorf("bare flow seq = %#v", v)
+	}
+}
+
+// TestCompactInlineSequence covers a compact block sequence introduced inline after
+// an explicit ": " whose wrapped entries align under the "-" column, not key+1
+// (yaml-test-suite 5WE3).
+func TestCompactInlineSequence(t *testing.T) {
+	m := mustLoad(t, "? key\n: - one\n  - two\n").(*Map)
+	v, _ := m.Get("key")
+	arr, ok := v.([]any)
+	if !ok || len(arr) != 2 || !eqValue(arr[0], "one") || !eqValue(arr[1], "two") {
+		t.Errorf("compact inline sequence = %#v", v)
+	}
+}
+
 // TestCommentsEverywhere covers `#` comments in the non-content positions the
 // loader now consumes: a comment-only value after "key:", a "--- # comment" and
 // "... # comment" marker suffix, an explicit "? # c" / ": # c" key/value, and a
