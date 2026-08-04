@@ -77,8 +77,21 @@ var yamlTestSuite embed.FS
 // escaped tab, in addition to the common few) and rejects an escape indicator
 // outside it ("\." , "\'"), matching Psych/libyaml; a malformed \x/\u/\U hex
 // payload stays lenient. This graduates 55WF and HRE5. Baseline now 352/402
-// (87.56%), 0 panics, accept 308/308 well-formed loaded, 50 gaps. The remaining
-// gaps break down as:
+// (87.56%), 0 panics, accept 308/308 well-formed loaded, 50 gaps.
+// MULTILINE-NODE-PROPERTY phase (2026-08-04): a node's &anchor / !tag may be
+// written on its own (possibly more-indented) line, spread over several lines,
+// ahead of the node they annotate; the loader now merges those property lines and
+// attaches them to the following node (a scalar, a block scalar, a mapping, or a
+// zero-indent sequence), consuming tails it previously dropped. No corpus verdict
+// changed yet — this unblocks the trailing-content gate.
+// COMMENTS-AND-WHITESPACE phase (2026-08-04): a "#" comment is now consumed in
+// every non-content position — a comment-only value after "key:" / "? " / ": " /
+// "- ", a "--- # comment" or "... # comment" marker suffix — and a tab is accepted
+// as the whitespace after a "key:" or "-" indicator (only tab INDENTATION stays
+// forbidden). A column-0 "%…" line reached after a plain scalar's content has begun
+// folds into the scalar rather than reopening a directive (yaml-test-suite XLQ9).
+// This graduates Y79Y/009. Baseline now 353/402 (87.81%), accept 308/308, 49 gaps.
+// The remaining gaps break down as:
 //   - Ill-formed input NOT rejected (~47): malformed block-structure YAML the
 //     loader still accepts — trailing content after a block document (236B, TD5N,
 //     6S55, 9CWY, BD7L, 7MNF), inconsistent block indentation (4HVU, 5U3A, DMG6,
@@ -106,7 +119,7 @@ var yamlSuiteKnownFailing = map[string]bool{
 	"MUS6/01": true, "N4JP": true, "QLJ7": true,
 	"S98Z": true, "SR86": true, "SU74": true, "SY6V": true, "TD5N": true,
 	"U44R": true, "U99R": true, "W9L4": true, "Y79Y/004": true, "Y79Y/005": true,
-	"Y79Y/006": true, "Y79Y/007": true, "Y79Y/008": true, "Y79Y/009": true, "YJV2": true, "ZVH3": true,
+	"Y79Y/006": true, "Y79Y/007": true, "Y79Y/008": true, "YJV2": true, "ZVH3": true,
 	"ZXT5": true,
 }
 

@@ -557,6 +557,50 @@ func TestLoadEmptyExplicitAndBlock(t *testing.T) {
 	}
 }
 
+// TestCommentsEverywhere covers `#` comments in the non-content positions the
+// loader now consumes: a comment-only value after "key:", a "--- # comment" and
+// "... # comment" marker suffix, an explicit "? # c" / ": # c" key/value, and a
+// comment on a sequence entry — the real node following on the indented line.
+func TestCommentsEverywhere(t *testing.T) {
+	// A comment-only value: the value is the indented scalar beneath.
+	m := mustLoad(t, "key:    # Comment\n  value\n").(*Map)
+	if v, _ := m.Get("key"); !eqValue(v, "value") {
+		t.Errorf("comment-only value = %#v", v)
+	}
+	// A "--- # comment" marker, then the document node on the next line.
+	if v := mustLoad(t, "--- # here\nhello\n"); !eqValue(v, "hello") {
+		t.Errorf("marker comment = %#v", v)
+	}
+	// A "... # suffix" document-end marker is honoured (its suffix discarded).
+	if v := mustLoad(t, "doc\n... # Suffix\n"); !eqValue(v, "doc") {
+		t.Errorf("end-marker comment = %#v", v)
+	}
+	// Explicit "? # c" key / ": # c" value, each with the node on the block beneath.
+	m = mustLoad(t, "? # k comment\n  theKey\n: # v comment\n  theVal\n").(*Map)
+	if v, _ := m.Get("theKey"); !eqValue(v, "theVal") {
+		t.Errorf("explicit comment key/value = %#v", v)
+	}
+	// A "- # c" sequence entry whose value is the indented block.
+	v := mustLoad(t, "- # entry comment\n    item\n")
+	if arr, ok := v.([]any); !ok || len(arr) != 1 || !eqValue(arr[0], "item") {
+		t.Errorf("seq-entry comment = %#v", v)
+	}
+}
+
+// TestTabSeparators covers a tab used as the whitespace after a "key:" separator
+// and after a "-" sequence indicator (a tab is legal there, only tab indentation
+// is forbidden).
+func TestTabSeparators(t *testing.T) {
+	m := mustLoad(t, "key:\tvalue\n").(*Map)
+	if v, _ := m.Get("key"); !eqValue(v, "value") {
+		t.Errorf("tab after colon = %#v", v)
+	}
+	v := mustLoad(t, "-\tone\n-\ttwo\n")
+	if arr, ok := v.([]any); !ok || len(arr) != 2 || !eqValue(arr[0], "one") || !eqValue(arr[1], "two") {
+		t.Errorf("tab after dash = %#v", v)
+	}
+}
+
 // TestMultilineNodeProperties covers a node's `&anchor` / `!tag` written on its own
 // line(s) ahead of the node they annotate — the multi-line node-property form the
 // parseNodeProps/parseBlockProps machinery consumes and attaches to one node.
@@ -747,15 +791,15 @@ func TestDirectives(t *testing.T) {
 	}
 	// Rejections.
 	for _, src := range []string{
-		"%YAML 1.2\n%YAML 1.2\n---\n",    // repeated %YAML
-		"%YAML 1.2 foo\n---\n",           // extra token
-		"%YAML 1.1#c\n---\n",             // malformed version
-		"%YAML 12\n---\n",                // version with no '.'
-		"%YAML 1.\n---\n",                // version with a trailing '.'
-		"%YAML\n---\n",                   // missing version
-		"%YAML 1.2\n",                    // no document after directives
-		"%YAML 1.2\nplain\n",             // directive not followed by a marker
-		"scalar\n%YAML 1.2\n---\nnext\n", // directive reopened after content
+		"%YAML 1.2\n%YAML 1.2\n---\n",  // repeated %YAML
+		"%YAML 1.2 foo\n---\n",         // extra token
+		"%YAML 1.1#c\n---\n",           // malformed version
+		"%YAML 12\n---\n",              // version with no '.'
+		"%YAML 1.\n---\n",              // version with a trailing '.'
+		"%YAML\n---\n",                 // missing version
+		"%YAML 1.2\n",                  // no document after directives
+		"%YAML 1.2\nplain\n",           // directive not followed by a marker
+		"a: 1\n%YAML 1.2\n---\nnext\n", // directive reopened after a mapping, no "..."
 	} {
 		if _, err := Load(src); err == nil {
 			t.Errorf("Load(%q) accepted, want rejection", src)
@@ -763,10 +807,15 @@ func TestDirectives(t *testing.T) {
 			t.Errorf("Load(%q) error type = %T", src, err)
 		}
 	}
-	// A trailing "%YAML" with no following document marker is a plain-scalar
-	// continuation, not a directive: accepted.
+	// A "%…" line reached AFTER a plain scalar's content has begun is not a directive
+	// but ordinary plain-scalar continuation (yaml-test-suite XLQ9): it folds into the
+	// scalar rather than reopening the directive block, whether or not a later "---"
+	// starts a second document.
 	if _, err := Load("---\nscalar\n%YAML 1.2\n"); err != nil {
 		t.Errorf("trailing %%YAML continuation: %v", err)
+	}
+	if _, err := Load("scalar\n%YAML 1.2\n---\nnext\n"); err != nil {
+		t.Errorf("%%YAML folded into plain scalar before a second document: %v", err)
 	}
 }
 

@@ -181,6 +181,11 @@ func (l *loader) parseDocument() Value {
 		if len(first.content) > 4 {
 			rest = strings.TrimSpace(first.content[4:])
 		}
+		if strings.HasPrefix(rest, "#") {
+			// A "--- # comment" marker carries only a trailing comment: the document's
+			// node, if any, follows on the next line, exactly as for a bare "---".
+			rest = ""
+		}
 		if rest == "" {
 			l.pos = markerPos + 1
 			if l.peek() == nil {
@@ -248,7 +253,10 @@ func (l *loader) tokenize(src string) {
 			l.lines = append(l.lines, line{blank: true, raw: trimmed})
 			continue
 		}
-		if content == "..." {
+		if content == "..." || strings.HasPrefix(content, "... ") {
+			// The document-end marker "..." ends the stream this loader materialises; a
+			// trailing "# comment" after it (the only well-formed suffix) is discarded
+			// with it.
 			break
 		}
 		if strings.HasPrefix(content, "#") {
@@ -483,10 +491,11 @@ func (l *loader) gatherPlain(first string, minIndent int) string {
 			l.pos++
 			continue
 		}
-		if ln.indent < minIndent || isDocMarker(ln.content) ||
-			(ln.indent == 0 && strings.HasPrefix(ln.content, "%")) {
-			// A dedent ends the scalar; a document marker or a column-0 "%…" directive
-			// line is a stream construct, never plain-scalar continuation.
+		if ln.indent < minIndent || isDocMarker(ln.content) {
+			// A dedent ends the scalar, as does a document-boundary marker. A column-0
+			// "%…" line, by contrast, is NOT a directive once document content has begun
+			// (directives precede the first "---"): here it is ordinary plain-scalar
+			// continuation and is folded in.
 			break
 		}
 		body, cmt := splitPlainComment(ln.content)
@@ -707,8 +716,10 @@ func (l *loader) parseSequence(indent int, tag string) Value {
 		if ln.indent != indent || !isSeqEntry(ln.content) {
 			break
 		}
-		rest := strings.TrimPrefix(ln.content, "-")
-		rest = strings.TrimPrefix(rest, " ")
+		rest := strings.TrimLeft(strings.TrimPrefix(ln.content, "-"), " \t")
+		if strings.HasPrefix(rest, "#") {
+			rest = "" // a "- # comment" entry carries only a comment: the value is below
+		}
 		if rest == "" {
 			l.pos++
 			if l.peek() != nil && l.peek().indent > indent {
@@ -760,7 +771,10 @@ func (l *loader) parseMapping(indent int, tag string) Value {
 			break
 		}
 		key := l.scalarValue(keyStr, "")
-		if strings.TrimSpace(val) == "" {
+		if val == "" || val[0] == '#' {
+			// An empty value — or one that is only a "# comment" (a plain scalar may
+			// not open with '#', so a leading '#' after "key:" is always a comment) —
+			// means the real value, if any, is the indented block beneath the key.
 			l.pos++
 			if next := l.peek(); next != nil && (next.indent > indent || (next.indent == indent && isSeqEntry(next.content))) {
 				h.Set(key, l.parseNode(indent+1))
@@ -803,6 +817,9 @@ func (l *loader) explicitKey(ln line, indent int) (Value, bool) {
 		return nil, false
 	}
 	rest := strings.TrimSpace(strings.TrimPrefix(ln.content, "?"))
+	if strings.HasPrefix(rest, "#") {
+		rest = "" // "? # comment": the key node is the indented block beneath
+	}
 	if rest == "" {
 		l.pos++
 		return l.parseBlock(indent, ""), true
@@ -825,6 +842,9 @@ func (l *loader) explicitValue(indent int) Value {
 		return nil
 	}
 	rest := strings.TrimSpace(strings.TrimPrefix(ln.content, ":"))
+	if strings.HasPrefix(rest, "#") {
+		rest = "" // ": # comment": the value node is the indented block beneath
+	}
 	if rest == "" {
 		l.pos++
 		if next := l.peek(); next != nil && (next.indent > indent || (next.indent == indent && isSeqEntry(next.content))) {
@@ -1249,9 +1269,10 @@ func parseYAMLTime(s string) (Value, bool) {
 
 // --- token helpers ------------------------------------------------------------
 
-// isSeqEntry reports whether content is a block-sequence entry.
+// isSeqEntry reports whether content is a block-sequence entry — a "-" indicator
+// alone or followed by whitespace (a space or a tab) then the entry node.
 func isSeqEntry(content string) bool {
-	return content == "-" || strings.HasPrefix(content, "- ")
+	return content == "-" || strings.HasPrefix(content, "- ") || strings.HasPrefix(content, "-\t")
 }
 
 // isFlowStart reports whether content opens a flow collection.
@@ -1277,7 +1298,7 @@ func splitMapEntry(content string) (key, value string, ok bool) {
 // scalar character and is not treated as opening a quoted span.
 func mapColon(content string) int {
 	for i := skipQuotedPrefix(content); i < len(content); i++ {
-		if content[i] == ':' && (i == len(content)-1 || content[i+1] == ' ') {
+		if content[i] == ':' && (i == len(content)-1 || content[i+1] == ' ' || content[i+1] == '\t') {
 			return i
 		}
 	}
@@ -1321,7 +1342,7 @@ func topColon(content string) int {
 		case ']', '}':
 			depth--
 		case ':':
-			if depth == 0 && (i == len(content)-1 || content[i+1] == ' ') {
+			if depth == 0 && (i == len(content)-1 || content[i+1] == ' ' || content[i+1] == '\t') {
 				return i
 			}
 		}
