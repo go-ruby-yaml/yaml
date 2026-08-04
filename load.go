@@ -954,7 +954,8 @@ func parseRegexpScalar(s string) Value {
 // with a *SyntaxError instead of being silently mis-parsed.
 func (l *loader) gatherFlow(first string, minIndent int) (string, bool) {
 	var out strings.Builder
-	depth := 0
+	var stack []byte // the open '['/'{' brackets, innermost last
+	multiLine := false
 	var quote byte
 	line := first
 	for {
@@ -978,12 +979,19 @@ func (l *loader) gatherFlow(first string, minIndent int) (string, bool) {
 			case '\'', '"':
 				quote = c
 			case '[', '{':
-				depth++
+				stack = append(stack, c)
 			case ']', '}':
-				depth--
-				if depth == 0 {
+				stack = stack[:len(stack)-1]
+				if len(stack) == 0 {
 					out.WriteByte(c)
-					return out.String(), l.checkFlowTrailer(line[i+1:])
+					isKey := l.checkFlowTrailer(line[i+1:])
+					if isKey && multiLine {
+						// A flow collection that spans several physical lines cannot serve as
+						// an implicit mapping key ("[23\n]: 42"): an implicit key must fit on
+						// one line.
+						l.fail("multi-line flow collection used as a mapping key")
+					}
+					return out.String(), isKey
 				}
 			case '#':
 				if i == 0 || line[i-1] == ' ' || line[i-1] == '\t' {
@@ -1004,8 +1012,17 @@ func (l *loader) gatherFlow(first string, minIndent int) (string, bool) {
 			// its own mapping key's column).
 			l.fail("insufficient indentation in multi-line flow collection")
 		}
-		out.WriteByte(' ') // fold the physical line break into a space
+		multiLine = true
 		line = l.lines[l.pos].content
+		if len(stack) > 0 && stack[len(stack)-1] == '[' && line != "" && line[0] == ':' {
+			// Directly inside a flow SEQUENCE, a folded continuation line opening with
+			// ":" means an implicit-key flow pair was broken by a line break before its
+			// ":" separator ("[ key\n : value ]", "[ \"key\"\n :value ]"), which the flow
+			// grammar forbids. Inside a flow MAPPING ("{ \"foo\"\n : bar }") the same
+			// break is allowed, so the check is gated on the innermost bracket type.
+			l.fail("flow-sequence key and ':' separated by a line break")
+		}
+		out.WriteByte(' ') // fold the physical line break into a space
 		l.pos++
 	}
 }
@@ -1040,7 +1057,25 @@ func (l *loader) parseFlowSeq(s string) Value {
 	if inner == "" {
 		return arr
 	}
-	for _, item := range splitFlow(inner) {
+	items := splitFlow(inner)
+	for i, item := range items {
+		if item == "" && i < len(items)-1 {
+			// An empty entry between two commas ("[ , a ]", "[ a, , b ]") is illegal; a
+			// single trailing comma ("[ a, b, ]") leaves an empty LAST slot, which YAML
+			// does permit, so only a non-final empty entry rejects.
+			l.fail("empty entry in flow sequence")
+		}
+		if item == "-" {
+			// A lone "-" is not a valid flow scalar: the "-" indicator is immediately
+			// followed by a flow-indicator (",", "]") with no plain content ("[-]",
+			// "[-, -]").
+			l.fail("plain dash in flow sequence")
+		}
+		if strings.HasPrefix(item, "#") {
+			// A plain scalar may not begin with "#"; an unquoted flow entry opening with
+			// "#" is a comment character wedged against a comma ("c,#invalid").
+			l.fail("comment character starting a flow entry")
+		}
 		arr = append(arr, l.scalarValue(item, ""))
 	}
 	return arr

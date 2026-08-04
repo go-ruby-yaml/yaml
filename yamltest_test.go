@@ -124,6 +124,16 @@ var yamlTestSuite embed.FS
 // anchored — one anchor per node), FTA2/KSS4 (a header anchor over a sequence/scalar),
 // 5KJE/UDR7 (trailing flow commas), and 7FWL/UGM3 (verbatim tags with commas) all
 // still load. Baseline now 379/402 (94.28%), accept 308/308, reject 71/94, 23 gaps.
+// FLOW-EDGE-CASE phase (2026-08-04): flow-collection validation now rejects an empty
+// entry between commas ("[ , a ]" 9MAG, "[ a, b, , ]" CTN5) while still allowing a
+// single trailing comma ("[ a, b, ]" 5KJE/UDR7), a lone plain dash in a flow sequence
+// ("[-]" YJV2, "[-, -]" G5U8), a comment character wedged against a comma ("c,#invalid"
+// CVW2), a multi-line flow collection used as an implicit mapping key ("[23\n]: 42"
+// C2SP), and a flow-SEQUENCE implicit key split from its ":" by a line break ("[ key\n
+// : value ]" DK4H, ZXT5). The last check is gated on the innermost bracket being a
+// sequence, so the many valid flow MAPPINGS that legitimately break a key from its
+// ":" ("{\"foo\"\n: \"bar\"}" 4MUZ/00-02, 5MUD, K3WX, VJP3/01, FRK4) still load.
+// Baseline now 387/402 (96.27%), accept 308/308, reject 79/94, 15 gaps.
 // The remaining gaps break down as:
 //   - Ill-formed input NOT rejected (~30): anchor/tag misuse (4JVG, CXX2, SR86,
 //     SU74, SY6V, U99R, LHL4), flow-collection edge cases (9MAG, CTN5, CVW2, G5U8,
@@ -138,15 +148,13 @@ var yamlTestSuite embed.FS
 var yamlSuiteKnownFailing = map[string]bool{
 	"3HFZ": true,
 	"5LLU": true, "5U3A": true,
-	"8XDJ": true, "9MAG": true,
-	"C2SP": true, "CML9": true,
-	"CTN5": true, "CVW2": true, "DK4H": true,
-	"G5U8": true, "GDY7": true,
+	"8XDJ":    true,
+	"CML9":    true,
+	"GDY7":    true,
 	"MUS6/01": true, "QLJ7": true,
 	"S98Z": true,
 	"W9L4": true, "Y79Y/004": true, "Y79Y/005": true,
-	"Y79Y/006": true, "Y79Y/007": true, "Y79Y/008": true, "YJV2": true,
-	"ZXT5": true,
+	"Y79Y/006": true, "Y79Y/007": true, "Y79Y/008": true,
 }
 
 // safeLoad calls Load, converting a panic into a flagged result so one broken
