@@ -110,7 +110,21 @@ var yamlTestSuite embed.FS
 // multi-line key misuse (7LBH, D49Q, G7JE).
 // The gate was confirmed to keep accept at 308/308 (a full-corpus diff showed every
 // previously-valid document still loads). Baseline now 372/402 (92.54%), accept
-// 308/308, reject 64/94, 30 gaps. The remaining gaps break down as:
+// 308/308, reject 64/94, 30 gaps.
+// ANCHOR-TAG-VALIDATION phase (2026-08-04): finer structural checks on node
+// properties now reject the anchor/tag-misuse cluster: a node carrying two anchors
+// (4JVG — an anchor on the "key:" value line and another on the value's own line
+// both landing on one scalar), an anchor on an alias node in value or key position
+// (SR86 "&b *a", SU74 "&b *alias : v"), an anchor followed inline by a sequence
+// entry ("&anchor - x", SY6V), an anchor on the "---" header line ahead of an inline
+// mapping ("--- &a k: v", CXX2), and a shorthand/named tag carrying a flow-indicator
+// character ("!!str," U99R, "!invalid{}tag" LHL4; verbatim "!<...>" tags stay
+// exempt). Each rule was verified narrow against the full valid set: the near-twin
+// valid documents 7BMT/U3XV (a value anchor over a mapping whose key is separately
+// anchored — one anchor per node), FTA2/KSS4 (a header anchor over a sequence/scalar),
+// 5KJE/UDR7 (trailing flow commas), and 7FWL/UGM3 (verbatim tags with commas) all
+// still load. Baseline now 379/402 (94.28%), accept 308/308, reject 71/94, 23 gaps.
+// The remaining gaps break down as:
 //   - Ill-formed input NOT rejected (~30): anchor/tag misuse (4JVG, CXX2, SR86,
 //     SU74, SY6V, U99R, LHL4), flow-collection edge cases (9MAG, CTN5, CVW2, G5U8,
 //     YJV2, C2SP, DK4H, ZXT5, CML9), stray comments (8XDJ, GDY7), directives
@@ -122,16 +136,15 @@ var yamlTestSuite embed.FS
 //
 // Each is a dedicated gap-closing target; the set may only shrink.
 var yamlSuiteKnownFailing = map[string]bool{
-	"3HFZ": true, "4JVG": true,
+	"3HFZ": true,
 	"5LLU": true, "5U3A": true,
 	"8XDJ": true, "9MAG": true,
 	"C2SP": true, "CML9": true,
-	"CTN5": true, "CVW2": true, "CXX2": true, "DK4H": true,
+	"CTN5": true, "CVW2": true, "DK4H": true,
 	"G5U8": true, "GDY7": true,
-	"LHL4":    true,
 	"MUS6/01": true, "QLJ7": true,
-	"S98Z": true, "SR86": true, "SU74": true, "SY6V": true,
-	"U99R": true, "W9L4": true, "Y79Y/004": true, "Y79Y/005": true,
+	"S98Z": true,
+	"W9L4": true, "Y79Y/004": true, "Y79Y/005": true,
 	"Y79Y/006": true, "Y79Y/007": true, "Y79Y/008": true, "YJV2": true,
 	"ZXT5": true,
 }
