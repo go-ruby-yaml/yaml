@@ -190,7 +190,9 @@ func (l *loader) parseDocument() Value {
 		}
 		if style, chomp, ok := l.blockScalarHeader(rest); ok {
 			l.pos = markerPos + 1
-			return l.parseBlockScalar(style, chomp, first.indent)
+			// A document-root block scalar has no parent node, so its body may sit at
+			// column 0; -1 lets a body line at any indentation (including 0) count.
+			return l.parseBlockScalar(style, chomp, -1)
 		}
 		if tag, _, content := splitTagAnchor(rest); tag != "" && content == "" {
 			l.pos = markerPos + 1
@@ -372,9 +374,27 @@ func (l *loader) parseBlockScalar(style, chomp byte, parentIndent int) Value {
 // collection folded here must keep its wrapped lines at or beyond it, so a flow
 // value dedented to (or past) its own block key is rejected.
 func (l *loader) parseNode(minIndent int) Value {
+	return l.parseNodeProps(minIndent, "", nil)
+}
+
+// parseNodeProps parses the node at the cursor, carrying an inTag / inAnchors set
+// accumulated from preceding property-only lines. YAML lets a node's properties
+// (its `&anchor` and/or `!tag`) sit on their own line — even more-indented — ahead
+// of the node they annotate, and lets them spread over several such lines; this
+// method merges the current line's own leading tag/anchor with the inherited ones
+// so an anchor and a tag written on separate lines both attach to the single node
+// that follows.
+func (l *loader) parseNodeProps(minIndent int, inTag string, inAnchors []string) Value {
 	l.skipBlanks()
 	ln := l.lines[l.pos]
 	tag, anchorName, content := splitTagAnchor(ln.content)
+	if tag == "" {
+		tag = inTag // an inherited tag survives a following property line that has none
+	}
+	anchors := inAnchors
+	if anchorName != "" {
+		anchors = append(anchors, anchorName)
+	}
 	if strings.HasPrefix(content, "#") {
 		// What is left of a node line after its tag/anchor cannot begin with a bare
 		// "#": a whitespace-preceded "#" opened a comment, so the node has no inline
@@ -384,21 +404,19 @@ func (l *loader) parseNode(minIndent int) Value {
 	if content == "" {
 		l.lines[l.pos].content = ""
 		l.pos++
-		v := l.parseBlock(ln.indent, tag)
-		l.bind(anchorName, v)
-		return v
+		return l.parseBlockProps(ln.indent, tag, anchors)
 	}
 	l.lines[l.pos].content = content
 	if isSeqEntry(content) {
 		v := l.parseSequence(ln.indent, tag)
-		l.bind(anchorName, v)
+		l.bindAll(anchors, v)
 		return v
 	}
 	if !isFlowStart(content) {
 		_, _, isMap := splitMapEntry(content)
 		if isMap || isExplicitKey(content) {
 			v := l.parseMapping(ln.indent, tag)
-			l.bind(anchorName, v)
+			l.bindAll(anchors, v)
 			return v
 		}
 	}
@@ -418,7 +436,7 @@ func (l *loader) parseNode(minIndent int) Value {
 		content = l.gatherScalar(content, minIndent)
 	}
 	v := l.scalarValue(content, tag)
-	l.bind(anchorName, v)
+	l.bindAll(anchors, v)
 	return v
 }
 
@@ -621,17 +639,59 @@ func (l *loader) checkQuoteTrailer(after string) {
 	l.fail("trailing content after quoted scalar")
 }
 
-// parseBlock parses the block that follows a standalone tag / anchor.
+// parseBlock parses the block that follows a standalone tag / anchor with no
+// carried-over anchors (the sequence-entry and explicit-key callers).
 func (l *loader) parseBlock(parentIndent int, tag string) Value {
+	return l.parseBlockProps(parentIndent, tag, nil)
+}
+
+// parseBlockProps parses the block body of a node whose properties (tag / anchors)
+// were on the preceding line(s), binding those anchors to the result. The body is
+// the block beneath the property line: a sequence (which YAML lets sit at, or in
+// from, the property/key column, so it is taken whatever its indent), a block
+// scalar, a mapping, a further property-only line (recursed into so a multi-line
+// property run collapses onto one node), or a scalar / flow node. A non-sequence
+// body that dedents below the property line is not this node's content but a
+// sibling construct, leaving the node empty.
+func (l *loader) parseBlockProps(parentIndent int, tag string, anchors []string) Value {
 	l.skipBlanks()
-	if l.pos >= len(l.lines) || l.lines[l.pos].indent < parentIndent {
-		return l.taggedEmpty(tag)
+	if l.pos >= len(l.lines) {
+		return l.bindEmpty(tag, anchors)
 	}
 	child := l.lines[l.pos]
 	if isSeqEntry(child.content) {
-		return l.parseSequence(child.indent, tag)
+		v := l.parseSequence(child.indent, tag)
+		l.bindAll(anchors, v)
+		return v
 	}
-	return l.parseMapping(child.indent, tag)
+	if style, chomp, ok := l.blockScalarHeader(child.content); ok {
+		// A block scalar forms the body. Its header may sit more-indented than its own
+		// (explicitly-indented) content, so the body floor is taken two columns in from
+		// the header line, letting a body dedented below the header still be captured.
+		l.pos++
+		v := l.parseBlockScalar(style, chomp, max(child.indent-2, -1))
+		l.bindAll(anchors, v)
+		return v
+	}
+	if child.indent < parentIndent {
+		return l.bindEmpty(tag, anchors)
+	}
+	if _, _, isMap := splitMapEntry(child.content); isMap || isExplicitKey(child.content) {
+		v := l.parseMapping(child.indent, tag)
+		l.bindAll(anchors, v)
+		return v
+	}
+	// A scalar / flow node, or a further property-only line: recurse, carrying the
+	// tag and anchors so they land on the eventual node.
+	return l.parseNodeProps(parentIndent+1, tag, anchors)
+}
+
+// bindEmpty binds the carried anchors to an empty (possibly tagged) node — the node
+// a property line annotates when no body follows.
+func (l *loader) bindEmpty(tag string, anchors []string) Value {
+	v := l.taggedEmpty(tag)
+	l.bindAll(anchors, v)
+	return v
 }
 
 // parseSequence parses a block sequence: consecutive "- …" lines at exactly
@@ -985,10 +1045,12 @@ func (l *loader) skipBlanks() {
 	}
 }
 
-// bind records v under anchorName for later *alias references.
-func (l *loader) bind(anchorName string, v Value) {
-	if anchorName != "" {
-		l.anchors[anchorName] = v
+// bindAll records v under each anchor name for later *alias references. Multiple
+// names arise when a property run spreads several `&anchor` lines over one node;
+// the caller only ever collects non-empty names.
+func (l *loader) bindAll(anchors []string, v Value) {
+	for _, name := range anchors {
+		l.anchors[name] = v
 	}
 }
 
