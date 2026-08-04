@@ -420,13 +420,12 @@ func (l *loader) parseNodeProps(minIndent int, inTag string, inAnchors []string)
 		l.bindAll(anchors, v)
 		return v
 	}
-	if !isFlowStart(content) {
-		_, _, isMap := splitMapEntry(content)
-		if isMap || isExplicitKey(content) {
-			v := l.parseMapping(ln.indent, tag)
-			l.bindAll(anchors, v)
-			return v
-		}
+	if _, _, isMap := splitMapEntry(content); isMap || isExplicitKey(content) {
+		// A mapping entry — including one whose key is a flow collection used as a
+		// complex key ("{a: 1}: value"), which splitMapEntry now recognises.
+		v := l.parseMapping(ln.indent, tag)
+		l.bindAll(anchors, v)
+		return v
 	}
 	l.pos++
 	if isFlowStart(content) {
@@ -853,8 +852,23 @@ func (l *loader) explicitValue(indent int) Value {
 		return nil
 	}
 	l.lines[l.pos].content = rest
+	if isSeqEntry(rest) {
+		// A compact block sequence introduced inline (": - one") continues with its
+		// wrapped entries aligned under the "-" column, not the key indent+1; use that
+		// real column so a following "- two" at the same column joins the sequence.
+		l.lines[l.pos].indent = inlineNodeIndent(ln, ":")
+		return l.parseNode(l.lines[l.pos].indent)
+	}
 	l.lines[l.pos].indent = indent + 1
 	return l.parseNode(indent + 1)
+}
+
+// inlineNodeIndent returns the column at which the inline node text (the part after
+// `marker` and its trailing whitespace) begins within the marker line — the real
+// indentation a compact block collection folded onto that line occupies.
+func inlineNodeIndent(ln line, marker string) int {
+	after := strings.TrimPrefix(ln.content, marker)
+	return ln.indent + len(marker) + (len(after) - len(strings.TrimLeft(after, " \t")))
 }
 
 // scalarValue parses a single scalar token to a Ruby value, honouring an explicit
@@ -1284,6 +1298,12 @@ func isFlowStart(content string) bool {
 // honouring quoted keys.
 func splitMapEntry(content string) (key, value string, ok bool) {
 	i := mapColon(content)
+	if isFlowStart(content) {
+		// A line opening with a flow collection is a mapping entry only when a ": "
+		// separator follows the CLOSED collection; topColon skips the flow interior
+		// (whose own "k: v" pairs are not the block separator) to find it.
+		i = topColon(content)
+	}
 	if i < 0 {
 		return "", "", false
 	}

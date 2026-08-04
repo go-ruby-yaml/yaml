@@ -91,7 +91,14 @@ var yamlTestSuite embed.FS
 // forbidden). A column-0 "%…" line reached after a plain scalar's content has begun
 // folds into the scalar rather than reopening a directive (yaml-test-suite XLQ9).
 // This graduates Y79Y/009. Baseline now 353/402 (87.81%), accept 308/308, 49 gaps.
-// The remaining gaps break down as:
+// FLOW-BLOCK-KEY phase (2026-08-04): a flow collection ("{a: 1}", "[x]") used as a
+// complex block-mapping key — its ": value" (or block value beneath) following the
+// closed collection — now parses as a mapping (splitMapEntry finds the separator
+// past the flow interior via topColon), and a compact block sequence introduced
+// inline after ": " keeps its wrapped entries aligned under the "-" column. Both
+// are accept cases (Q9WF, 5WE3) already loading; consuming their full extent is the
+// last tail the trailing-content gate needs. Corpus steady at 353/402, accept
+// 308/308. The remaining gaps break down as:
 //   - Ill-formed input NOT rejected (~47): malformed block-structure YAML the
 //     loader still accepts — trailing content after a block document (236B, TD5N,
 //     6S55, 9CWY, BD7L, 7MNF), inconsistent block indentation (4HVU, 5U3A, DMG6,
