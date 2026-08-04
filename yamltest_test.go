@@ -59,9 +59,20 @@ var yamlTestSuite embed.FS
 // COMPOUND-KEY phase (2026-08-03): an inline mapping value that still carries a
 // top-level "key: " separator ("a: b: c", "a: 'b': c") — a second entry fused on
 // without a line break — is now rejected, using a flow- and quote-aware colon scan
-// so nested flow collections and quoted scalars are not misread. Baseline now
-// 335/402 (83.33%), 0 panics, accept 305/308, 67 gaps. The remaining gaps break
-// down as:
+// so nested flow collections and quoted scalars are not misread. Baseline 335/402
+// (83.33%), 0 panics, accept 305/308, 67 gaps.
+// MULTILINE-SCALAR-FOLDING phase (2026-08-04): plain and single/double-quoted
+// scalars now fold across continuation lines (a single break to a space, blank
+// lines to newlines, per-line whitespace stripped, a double-quote "\" eliding the
+// break), so their tails are consumed rather than dropped. This closed the classes
+// the fold makes reachable: a quoted scalar that never closes or is broken by a
+// document marker is rejected as unterminated (5TRB, 9MQT/01, CQ3W, QB6E, RXY3),
+// junk after a closing quote rejects (Q4CL, SU5Z), a "key: " fused into a folded
+// plain scalar rejects (2CMS, EW3V, HU3P, JKF3), and the value-level colon/quote
+// scans were hardened (a mid-scalar quote is no longer read as opening a quoted
+// span; DK95/04, 6CA3, 9KBC, Y79Y/002 also fixed via whitespace-only-line and
+// block-scalar-tab handling). Baseline now 350/402 (87.06%), 0 panics, accept
+// 308/308 well-formed loaded, 52 gaps. The remaining gaps break down as:
 //   - Ill-formed input NOT rejected (64): the loader still accepts malformed
 //     block-structure YAML it should reject (bad indentation, tab after an
 //     indicator, trailing content, unterminated/lax multi-line scalars) — most of
@@ -73,16 +84,16 @@ var yamlTestSuite embed.FS
 //
 // Each is a dedicated gap-closing target; the set may only shrink.
 var yamlSuiteKnownFailing = map[string]bool{
-	"236B": true, "2CMS": true, "3HFZ": true, "4HVU": true, "4JVG": true, "55WF": true,
-	"5LLU": true, "5TRB": true, "5U3A": true, "6CA3": true, "6S55": true, "7LBH": true,
-	"7MNF": true, "8XDJ": true, "9CWY": true, "9KBC": true, "9MAG": true, "9MQT/01": true,
-	"BD7L": true, "BF9H": true, "BS4K": true, "C2SP": true, "CML9": true, "CQ3W": true,
-	"CTN5": true, "CVW2": true, "CXX2": true, "D49Q": true, "DK4H": true, "DK95/04": true,
-	"DMG6": true, "EW3V": true, "G5U8": true, "G7JE": true, "G9HC": true, "GDY7": true,
-	"GT5M": true, "H7J7": true, "HRE5": true, "HU3P": true, "JKF3": true, "LHL4": true,
-	"MUS6/01": true, "N4JP": true, "Q4CL": true, "QB6E": true, "QLJ7": true, "RXY3": true,
-	"S98Z": true, "SR86": true, "SU5Z": true, "SU74": true, "SY6V": true, "TD5N": true,
-	"U44R": true, "U99R": true, "W9L4": true, "Y79Y/002": true, "Y79Y/004": true, "Y79Y/005": true,
+	"236B": true, "3HFZ": true, "4HVU": true, "4JVG": true, "55WF": true,
+	"5LLU": true, "5U3A": true, "6S55": true, "7LBH": true,
+	"7MNF": true, "8XDJ": true, "9CWY": true, "9MAG": true,
+	"BD7L": true, "BF9H": true, "BS4K": true, "C2SP": true, "CML9": true,
+	"CTN5": true, "CVW2": true, "CXX2": true, "D49Q": true, "DK4H": true,
+	"DMG6": true, "G5U8": true, "G7JE": true, "G9HC": true, "GDY7": true,
+	"GT5M": true, "H7J7": true, "HRE5": true, "LHL4": true,
+	"MUS6/01": true, "N4JP": true, "QLJ7": true,
+	"S98Z": true, "SR86": true, "SU74": true, "SY6V": true, "TD5N": true,
+	"U44R": true, "U99R": true, "W9L4": true, "Y79Y/004": true, "Y79Y/005": true,
 	"Y79Y/006": true, "Y79Y/007": true, "Y79Y/008": true, "Y79Y/009": true, "YJV2": true, "ZVH3": true,
 	"ZXT5": true,
 }
