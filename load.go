@@ -68,7 +68,67 @@ func load(src string) (v Value, err error) {
 	v = l.parseDocument()
 	l.checkNoTrailingDirective()
 	l.checkStreamEnd()
+	l.checkTagHandleScope()
 	return v, nil
+}
+
+// checkTagHandleScope enforces that a named tag handle ("!prefix!") is only used in a
+// document whose own directive block declares it with a "%TAG": directive scope resets
+// at every document boundary. It walks the tokenized stream, accumulating %TAG handles
+// as "pending" until a "---" marker activates them for that one document; a later
+// document that references a handle it did not (re)declare is rejected (QLJ7). The
+// primary "!" and secondary "!!" handles are built-in and need no declaration, and a
+// document body's leading tags are stripped by the parser before this runs, so only
+// document-header tags and the headers/bodies of unparsed following documents are
+// checked — exactly where an undeclared handle would surface.
+func (l *loader) checkTagHandleScope() {
+	active, pending, started := map[string]bool{}, map[string]bool{}, false
+	activate := func() {
+		active, pending, started = pending, map[string]bool{}, true
+	}
+	for _, ln := range l.lines {
+		if ln.blank {
+			continue
+		}
+		c := ln.content
+		switch {
+		case strings.HasPrefix(c, "%TAG "):
+			if f := strings.Fields(c); len(f) >= 2 {
+				pending[f[1]] = true
+			}
+		case c == "---" || strings.HasPrefix(c, "--- "):
+			activate()
+			l.checkHandleUse(strings.TrimPrefix(c, "---"), active)
+		default:
+			if !started {
+				activate() // a bare document with no "---": pre-content directives apply
+			}
+			l.checkHandleUse(c, active)
+		}
+	}
+}
+
+// checkHandleUse rejects a leading named tag handle on content that is not active in
+// the current document's directive scope.
+func (l *loader) checkHandleUse(content string, active map[string]bool) {
+	tag, _, _ := splitTagAnchor(strings.TrimLeft(content, " \t"))
+	if h := namedTagHandle(tag); h != "" && !active[h] {
+		l.fail("tag handle used but not declared in this document")
+	}
+}
+
+// namedTagHandle returns the named handle ("!prefix!") a tag uses, or "" when the tag
+// uses the built-in primary ("!name") or secondary ("!!name") handle, is a verbatim
+// tag ("!<...>"), or is absent. A named handle is a "!", one-or-more characters, then
+// a closing "!".
+func namedTagHandle(tag string) string {
+	if !strings.HasPrefix(tag, "!") || strings.HasPrefix(tag, "!<") {
+		return ""
+	}
+	if j := strings.IndexByte(tag[1:], '!'); j >= 1 {
+		return tag[:j+2] // "!" + name + "!"
+	}
+	return ""
 }
 
 // parseDirectives consumes a leading run of "%…" directive lines (the directive
@@ -470,6 +530,14 @@ func (l *loader) parseNodeProps(minIndent int, inTag string, inAnchors []string)
 		return v
 	}
 	l.pos++
+	if content[0] == '%' {
+		// A plain scalar may not begin with "%" (a directive indicator). A "%…" line in
+		// document-content position is not a directive — directives precede the first
+		// "---" — so it is an ill-formed scalar ("%YAML 1.2" as a document's node,
+		// MUS6/01). A "%…" folded in as a CONTINUATION line of a scalar that already
+		// began (XLQ9) never reaches here, since content is the node's opening token.
+		l.fail("plain scalar may not begin with '%'")
+	}
 	if isFlowStart(content) {
 		var isKey bool
 		content, isKey = l.gatherFlow(content, minIndent)
