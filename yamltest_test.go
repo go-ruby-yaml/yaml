@@ -134,7 +134,14 @@ var yamlTestSuite embed.FS
 // sequence, so the many valid flow MAPPINGS that legitimately break a key from its
 // ":" ("{\"foo\"\n: \"bar\"}" 4MUZ/00-02, 5MUD, K3WX, VJP3/01, FRK4) still load.
 // Baseline now 387/402 (96.27%), accept 308/308, reject 79/94, 15 gaps.
-// The remaining gaps break down as:
+// TAB-INDICATOR phase (2026-08-04): a tab used as separation-then-indentation right
+// after a block indicator now rejects — a "-" entry whose tab separator precedes a
+// NESTED block indicator ("-\t-" Y79Y/004, "- \t-" Y79Y/005), a "?" explicit-key
+// indicator followed by a tab ("?\t-" Y79Y/006, "?\tkey:" Y79Y/008), and a ":"
+// explicit-value indicator followed by a tab (":\t-" Y79Y/007). A tab before a plain
+// scalar or an empty entry ("- \tfoo", "- \t" Y79Y/010, "foo: |\n \t" Y79Y/001) stays
+// valid separation. Baseline now 392/402 (97.51%), accept 308/308, reject 84/94,
+// 10 gaps. The remaining gaps break down as:
 //   - Ill-formed input NOT rejected (~30): anchor/tag misuse (4JVG, CXX2, SR86,
 //     SU74, SY6V, U99R, LHL4), flow-collection edge cases (9MAG, CTN5, CVW2, G5U8,
 //     YJV2, C2SP, DK4H, ZXT5, CML9), stray comments (8XDJ, GDY7), directives
@@ -153,8 +160,7 @@ var yamlSuiteKnownFailing = map[string]bool{
 	"GDY7":    true,
 	"MUS6/01": true, "QLJ7": true,
 	"S98Z": true,
-	"W9L4": true, "Y79Y/004": true, "Y79Y/005": true,
-	"Y79Y/006": true, "Y79Y/007": true, "Y79Y/008": true,
+	"W9L4": true,
 }
 
 // safeLoad calls Load, converting a panic into a flagged result so one broken

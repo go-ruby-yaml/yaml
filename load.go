@@ -423,6 +423,12 @@ func (l *loader) parseNodeProps(minIndent int, inTag string, inAnchors []string)
 		// anchor must precede the sequence on its own line / indentation.
 		l.fail("anchor followed by an inline sequence entry")
 	}
+	if strings.HasPrefix(content, "?\t") {
+		// An explicit-key indicator "?" must be separated from its key by a space; a
+		// tab ("?\t-", "?\tkey:") uses the tab as separation-then-indentation, which
+		// YAML forbids.
+		l.fail("tab after '?' key indicator")
+	}
 	if strings.HasPrefix(content, "#") {
 		// What is left of a node line after its tag/anchor cannot begin with a bare
 		// "#": a whitespace-preceded "#" opened a comment, so the node has no inline
@@ -735,7 +741,16 @@ func (l *loader) parseSequence(indent int, tag string) Value {
 		if ln.indent != indent || !isSeqEntry(ln.content) {
 			break
 		}
-		rest := strings.TrimLeft(strings.TrimPrefix(ln.content, "-"), " \t")
+		afterDash := strings.TrimPrefix(ln.content, "-")
+		rest := strings.TrimLeft(afterDash, " \t")
+		if sep := afterDash[:len(afterDash)-len(rest)]; strings.ContainsRune(sep, '\t') &&
+			(isSeqEntry(rest) || isExplicitKey(rest)) {
+			// A tab separating a "-" entry from a NESTED block indicator ("-\t-", "- \t-",
+			// "-\t? k") makes that tab the nested collection's indentation, which YAML
+			// forbids. A tab before a plain scalar ("- \tfoo") or an empty entry ("- \t")
+			// is ordinary separation and stays valid.
+			l.fail("tab before a nested block indicator")
+		}
 		if strings.HasPrefix(rest, "#") {
 			rest = "" // a "- # comment" entry carries only a comment: the value is below
 		}
@@ -862,6 +877,11 @@ func (l *loader) explicitValue(indent int) Value {
 		return nil
 	}
 	ln := l.lines[l.pos]
+	if ln.indent == indent && strings.HasPrefix(ln.content, ":\t") {
+		// The explicit-value indicator ":" must be separated from its value by a space;
+		// a tab (":\t-") uses the tab as separation-then-indentation, which YAML forbids.
+		l.fail("tab after ':' value indicator")
+	}
 	if ln.indent != indent || (ln.content != ":" && !strings.HasPrefix(ln.content, ": ")) {
 		// No matching ":" line — the key has a nil value (defensive).
 		return nil
