@@ -557,6 +557,45 @@ func TestLoadEmptyExplicitAndBlock(t *testing.T) {
 	}
 }
 
+// TestMultilineNodeProperties covers a node's `&anchor` / `!tag` written on its own
+// line(s) ahead of the node they annotate — the multi-line node-property form the
+// parseNodeProps/parseBlockProps machinery consumes and attaches to one node.
+func TestMultilineNodeProperties(t *testing.T) {
+	// An anchor on its own, more-indented line before a scalar value: the anchor
+	// binds the scalar, so a later *alias resolves to it.
+	m := mustLoad(t, "top: &val\n  six\nother: *val\n").(*Map)
+	if tv, _ := m.Get("top"); !eqValue(tv, "six") {
+		t.Errorf("anchor-line scalar value = %#v", tv)
+	}
+	if ov, _ := m.Get("other"); !eqValue(ov, "six") {
+		t.Errorf("alias to anchor-line scalar = %#v", ov)
+	}
+	// An anchor on its own line preceding a zero-indent block sequence (the sequence
+	// sits at the key's own column) forms the key's value.
+	m = mustLoad(t, "seq:\n &a\n- x\n- y\nalias: *a\n").(*Map)
+	sv, _ := m.Get("seq")
+	if arr, ok := sv.([]any); !ok || len(arr) != 2 || !eqValue(arr[0], "x") || !eqValue(arr[1], "y") {
+		t.Errorf("anchor-line zero-indent sequence = %#v", sv)
+	}
+	if av, _ := m.Get("alias"); func() bool { _, ok := av.([]any); return !ok }() {
+		t.Errorf("alias to anchor-line sequence = %#v", av)
+	}
+	// A tag on its own line before a mapping ("key: &anchor\n !!map\n  a: b"): the
+	// mapping loads, bound to the anchor.
+	m = mustLoad(t, "key: &anchor\n !!map\n  a: b\n").(*Map)
+	kv, _ := m.Get("key")
+	if inner, ok := kv.(*Map); !ok {
+		t.Errorf("tag-line mapping value = %#v", kv)
+	} else if av, _ := inner.Get("a"); !eqValue(av, "b") {
+		t.Errorf("tag-line mapping entry = %#v", av)
+	}
+	// An anchor line then a tag line then the scalar, all at column 0 across a
+	// document: the property lines are consumed and the scalar node is produced.
+	if v := mustLoad(t, "&a1\n!!str\n123\n"); !eqValue(v, int64(123)) {
+		t.Errorf("anchor+tag lines then scalar = %#v", v)
+	}
+}
+
 // TestLoadParseNodeEOF covers parseNode reached at end of input (returns nil).
 func TestLoadParseNodeEOF(t *testing.T) {
 	// A mapping value pointing past the last line: "k:" as the only content after a
