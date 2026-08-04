@@ -194,11 +194,11 @@ func (l *loader) parseDocument() Value {
 			}
 			return l.parseNode(0)
 		}
-		if style, chomp, ok := l.blockScalarHeader(rest); ok {
+		if style, chomp, hasIndent, ok := l.blockScalarHeader(rest); ok {
 			l.pos = markerPos + 1
 			// A document-root block scalar has no parent node, so its body may sit at
 			// column 0; -1 lets a body line at any indentation (including 0) count.
-			return l.parseBlockScalar(style, chomp, -1)
+			return l.parseBlockScalar(style, chomp, hasIndent, -1)
 		}
 		if tag, _, content := splitTagAnchor(rest); tag != "" && content == "" {
 			l.pos = markerPos + 1
@@ -287,10 +287,10 @@ func (l *loader) tokenize(src string) {
 // when it does but the header is malformed (a 0 or multi-digit indent, a repeated
 // indicator, or trailing junk). content must open with '|' or '>' (the caller,
 // blockScalarHeader, guarantees it).
-func blockScalarTag(content string) (style, chomp byte, ok bool) {
+func blockScalarTag(content string) (style, chomp byte, indent, ok bool) {
 	style = content[0]
 	rest := content[1:]
-	i, sawIndent, sawChomp := 0, false, false
+	i, sawChomp := 0, false
 	for i < len(rest) {
 		c := rest[i]
 		if (c == '+' || c == '-') && !sawChomp {
@@ -298,8 +298,8 @@ func blockScalarTag(content string) (style, chomp byte, ok bool) {
 			i++
 			continue
 		}
-		if c >= '1' && c <= '9' && !sawIndent {
-			sawIndent = true
+		if c >= '1' && c <= '9' && !indent {
+			indent = true
 			i++
 			continue
 		}
@@ -308,44 +308,49 @@ func blockScalarTag(content string) (style, chomp byte, ok bool) {
 	tail := rest[i:]
 	trimmed := strings.TrimLeft(tail, " \t")
 	if trimmed == "" || (strings.HasPrefix(trimmed, "#") && len(tail) > len(trimmed)) {
-		return style, chomp, true
+		return style, chomp, indent, true
 	}
-	return 0, 0, false
+	return 0, 0, false, false
 }
 
 // blockScalarHeader parses a block-scalar header on a value/node line, rejecting a
 // malformed one. ok is false only when content does not open a block scalar at all
 // (no leading '|'/'>'); a '|'/'>' followed by an invalid header is rejected, since
 // a plain scalar may not begin with a block indicator.
-func (l *loader) blockScalarHeader(content string) (style, chomp byte, ok bool) {
+func (l *loader) blockScalarHeader(content string) (style, chomp byte, indent, ok bool) {
 	if content == "" || (content[0] != '|' && content[0] != '>') {
-		return 0, 0, false
+		return 0, 0, false, false
 	}
-	style, chomp, valid := blockScalarTag(content)
+	style, chomp, indent, valid := blockScalarTag(content)
 	if !valid {
 		l.fail("malformed block scalar header")
 	}
-	return style, chomp, true
+	return style, chomp, indent, true
 }
 
 // parseBlockScalar reads a literal / folded block scalar whose indicator is on the
 // current line; the body is the following lines indented deeper than parentIndent.
-func (l *loader) parseBlockScalar(style, chomp byte, parentIndent int) Value {
+func (l *loader) parseBlockScalar(style, chomp byte, explicitIndent bool, parentIndent int) Value {
 	var body []string
 	bodyIndent := -1
+	leadBlankMax := -1
 	for l.pos < len(l.lines) {
 		ln := l.lines[l.pos]
 		if ln.blank {
 			// A blank line is a paragraph break inside the block (its raw text, after
 			// stripping the base indent, is empty); a trailing blank was already
 			// trimmed by tokenize so this never runs past the block's end.
-			if bodyIndent < 0 && strings.ContainsRune(ln.raw, '\t') &&
-				leadingSpaces(ln.raw) <= parentIndent {
-				// A tab within the block scalar's indentation zone — no deeper than the
-				// parent's indent, before any content line has fixed the body indent — is
-				// a tab used for indentation, which YAML forbids. A tab further right (on
-				// a more-indented line) is ordinary content.
-				l.fail("found a tab character used for indentation")
+			if bodyIndent < 0 {
+				if strings.ContainsRune(ln.raw, '\t') && leadingSpaces(ln.raw) <= parentIndent {
+					// A tab within the block scalar's indentation zone — no deeper than the
+					// parent's indent, before any content line has fixed the body indent — is
+					// a tab used for indentation, which YAML forbids. A tab further right (on
+					// a more-indented line) is ordinary content.
+					l.fail("found a tab character used for indentation")
+				}
+				if s := leadingSpaces(ln.raw); s > leadBlankMax {
+					leadBlankMax = s // widest leading empty line before the first content line
+				}
 			}
 			body = append(body, "")
 			l.pos++
@@ -356,6 +361,14 @@ func (l *loader) parseBlockScalar(style, chomp byte, parentIndent int) Value {
 		}
 		if bodyIndent < 0 {
 			bodyIndent = ln.indent
+			if !explicitIndent && leadBlankMax > bodyIndent {
+				// With auto-detected indentation the content indent is fixed by the first
+				// non-empty line; a preceding empty line more-indented than it is ill-formed
+				// ("|"/">" then spaces-only lines wider than the first content line — 5LLU,
+				// W9L4). An explicit indent indicator pins the indent instead, so the check
+				// is skipped there.
+				l.fail("block scalar leading empty line is over-indented")
+			}
 		}
 		cut := bodyIndent
 		if cut > len(ln.raw) {
@@ -698,12 +711,12 @@ func (l *loader) parseBlockProps(parentIndent int, tag string, anchors []string)
 		l.bindAll(anchors, v)
 		return v
 	}
-	if style, chomp, ok := l.blockScalarHeader(child.content); ok {
+	if style, chomp, hasIndent, ok := l.blockScalarHeader(child.content); ok {
 		// A block scalar forms the body. Its header may sit more-indented than its own
 		// (explicitly-indented) content, so the body floor is taken two columns in from
 		// the header line, letting a body dedented below the header still be captured.
 		l.pos++
-		v := l.parseBlockScalar(style, chomp, max(child.indent-2, -1))
+		v := l.parseBlockScalar(style, chomp, hasIndent, max(child.indent-2, -1))
 		l.bindAll(anchors, v)
 		return v
 	}
@@ -763,9 +776,9 @@ func (l *loader) parseSequence(indent int, tag string) Value {
 			}
 			continue
 		}
-		if style, chomp, ok := l.blockScalarHeader(rest); ok {
+		if style, chomp, hasIndent, ok := l.blockScalarHeader(rest); ok {
 			l.pos++
-			arr = append(arr, l.parseBlockScalar(style, chomp, indent))
+			arr = append(arr, l.parseBlockScalar(style, chomp, hasIndent, indent))
 			continue
 		}
 		l.lines[l.pos].content = rest
@@ -832,9 +845,9 @@ func (l *loader) parseMapping(indent int, tag string) Value {
 			// so a flow value or a quoted scalar is not misread.
 			l.fail("nested mapping in a plain scalar value")
 		}
-		if style, chomp, ok := l.blockScalarHeader(val); ok {
+		if style, chomp, hasIndent, ok := l.blockScalarHeader(val); ok {
 			l.pos++
-			h.Set(key, l.parseBlockScalar(style, chomp, indent))
+			h.Set(key, l.parseBlockScalar(style, chomp, hasIndent, indent))
 			continue
 		}
 		l.lines[l.pos].content = val
