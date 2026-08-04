@@ -1356,7 +1356,11 @@ func unquoteSingle(s string) string {
 	return strings.ReplaceAll(body, "''", "'")
 }
 
-// unquoteDouble decodes a double-quoted YAML scalar.
+// unquoteDouble decodes a double-quoted YAML scalar. Every escape is validated
+// against the YAML 1.1/1.2 double-quoted escape table; an escape indicator outside
+// it (e.g. "\." or "\'") is not valid and rejects the document, matching
+// Psych/libyaml. A malformed \x / \u / \U hex payload is tolerated leniently (the
+// indicator letter is kept), preserving the loader's existing forgiving behaviour.
 func unquoteDouble(s string) string {
 	body := s
 	if len(body) >= 2 && body[0] == '"' && body[len(body)-1] == '"' {
@@ -1370,7 +1374,7 @@ func unquoteDouble(s string) string {
 			continue
 		}
 		i++
-		switch body[i] {
+		switch e := body[i]; e {
 		case 'n':
 			b.WriteByte('\n')
 		case 't':
@@ -1379,22 +1383,64 @@ func unquoteDouble(s string) string {
 			b.WriteByte('\r')
 		case '0':
 			b.WriteByte(0)
+		case 'a':
+			b.WriteByte(7)
+		case 'b':
+			b.WriteByte(8)
+		case 'v':
+			b.WriteByte(0xB)
+		case 'f':
+			b.WriteByte(0xC)
+		case 'e':
+			b.WriteByte(0x1B)
+		case ' ', '\t':
+			b.WriteByte(e) // escaped space / tab is that whitespace, literally
 		case '"':
 			b.WriteByte('"')
+		case '/':
+			b.WriteByte('/')
 		case '\\':
 			b.WriteByte('\\')
+		case 'N':
+			b.WriteRune(0x85)
+		case '_':
+			b.WriteRune(0xA0)
+		case 'L':
+			b.WriteRune(0x2028)
+		case 'P':
+			b.WriteRune(0x2029)
 		case 'x':
 			if i+2 < len(body) {
-				if n, err := strconv.ParseUint(body[i+1:i+3], 16, 8); err == nil {
-					b.WriteByte(byte(n))
+				if v, err := strconv.ParseUint(body[i+1:i+3], 16, 8); err == nil {
+					b.WriteByte(byte(v)) // \xNN is an 8-bit byte escape
 					i += 2
 					continue
 				}
 			}
 			b.WriteByte('x')
+		case 'u':
+			i = writeRuneEscape(&b, body, i, 4)
+		case 'U':
+			i = writeRuneEscape(&b, body, i, 8)
 		default:
-			b.WriteByte(body[i])
+			panic(parseError{msg: "invalid double-quote escape"})
 		}
 	}
 	return b.String()
+}
+
+// writeRuneEscape decodes the n-hex-digit payload of a "\u" / "\U" Unicode escape at
+// body[i] (i indexes the indicator letter) and writes the resulting rune. A short
+// or non-hex payload is left verbatim — the indicator letter is emitted and i is
+// unchanged — so malformed hex is tolerated rather than rejected. It returns the
+// index of the last consumed byte.
+func writeRuneEscape(b *strings.Builder, body string, i, n int) int {
+	if i+n < len(body) {
+		if v, err := strconv.ParseUint(body[i+1:i+1+n], 16, 32); err == nil {
+			b.WriteRune(rune(v))
+			return i + n
+		}
+	}
+	b.WriteByte(body[i])
+	return i
 }

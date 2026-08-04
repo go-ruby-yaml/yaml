@@ -151,12 +151,26 @@ func TestLoadDoubleQuoteEscapes(t *testing.T) {
 		`--- "a\rb"`:   "a\rb",
 		`--- "a\\b"`:   "a\\b",
 		`--- "a\x41b"`: "aAb",
-		`--- "a\qb"`:   "aqb", // unknown escape drops the backslash
 		`--- "a\xZZb"`: "axZZb",
+		// The full YAML escape table beyond the common few.
+		`--- "\a\b\v\f\e"`: "\a\b\v\f\x1b",
+		`--- "\ \/\""`:     " /\"",
+		`--- "\N\_\L\P"`:   "\u0085\u00a0\u2028\u2029",
+		`--- "xéy"`:        "xéy",
+		`--- "\U0001F600"`: "\U0001F600",
+		`--- "\uZZZZ"`:     "uZZZZ", // malformed \u payload kept verbatim
+		`--- "\U0000004"`:  "U0000004",
 	}
 	for s, want := range cases {
 		if v := mustLoad(t, s+"\n"); !eqValue(v, want) {
 			t.Errorf("Load(%q) = %#v, want %q", s, v, want)
+		}
+	}
+	// An escape indicator outside the table ("\q", "\.", "\'") is invalid and
+	// rejects, matching Psych/libyaml.
+	for _, s := range []string{`--- "a\qb"`, `--- "\."`, `--- "q\'x"`} {
+		if _, err := Load(s + "\n"); err == nil {
+			t.Errorf("Load(%q) accepted, want invalid-escape rejection", s)
 		}
 	}
 	// A double-quoted scalar whose only closing quote is escaped ("end\"") never
