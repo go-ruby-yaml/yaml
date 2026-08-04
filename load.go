@@ -210,6 +210,13 @@ func (l *loader) parseDocument() Value {
 			}
 			return l.parseMapping(l.peek().indent, tag)
 		}
+		if _, anchor, body := splitTagAnchor(rest); anchor != "" && !isFlowStart(body) && topColon(body) >= 0 {
+			// A node anchor written on the "---" header line may annotate a scalar or
+			// a following block collection, but not an inline block mapping opened on
+			// that same line ("--- &a k: v"): the mapping's first key would sit on the
+			// header line behind the anchor, which YAML forbids.
+			l.fail("anchor on document header followed by an inline mapping")
+		}
 		l.lines[markerPos].content = rest
 		l.lines[markerPos].indent = first.indent
 		return l.parseNode(0)
@@ -397,12 +404,24 @@ func (l *loader) parseNodeProps(minIndent int, inTag string, inAnchors []string)
 	l.skipBlanks()
 	ln := l.lines[l.pos]
 	tag, anchorName, content := splitTagAnchor(ln.content)
+	l.validateTag(tag)
 	if tag == "" {
 		tag = inTag // an inherited tag survives a following property line that has none
 	}
 	anchors := inAnchors
 	if anchorName != "" {
 		anchors = append(anchors, anchorName)
+	}
+	if anchorName != "" && strings.HasPrefix(content, "*") {
+		// A node may not carry both an anchor and be an alias ("&b *a"): an alias is a
+		// reference to an already-anchored node, not a fresh node to anchor.
+		l.fail("anchor on an alias node")
+	}
+	if anchorName != "" && isSeqEntry(content) {
+		// An anchor followed inline by a block-sequence entry ("&a - x") uses the "-"
+		// as if the anchored sequence began on the property line; a block sequence
+		// anchor must precede the sequence on its own line / indentation.
+		l.fail("anchor followed by an inline sequence entry")
 	}
 	if strings.HasPrefix(content, "#") {
 		// What is left of a node line after its tag/anchor cannot begin with a bare
@@ -770,6 +789,12 @@ func (l *loader) parseMapping(indent int, tag string) Value {
 		if !ok {
 			break
 		}
+		if _, kanchor, kbody := splitTagAnchor(keyStr); kanchor != "" && strings.HasPrefix(kbody, "*") {
+			// An anchor on an alias used as a mapping key ("&b *alias : v") is the same
+			// anchor-on-an-alias violation as in value position, rejected here because a
+			// mapping key is parsed as a bare scalar without the property peeling.
+			l.fail("anchor on an alias node")
+		}
 		key := l.scalarValue(keyStr, "")
 		if val == "" || val[0] == '#' {
 			// An empty value — or one that is only a "# comment" (a plain scalar may
@@ -1084,6 +1109,13 @@ func (l *loader) skipBlanks() {
 // names arise when a property run spreads several `&anchor` lines over one node;
 // the caller only ever collects non-empty names.
 func (l *loader) bindAll(anchors []string, v Value) {
+	if len(anchors) > 1 {
+		// A single node may carry at most one anchor. Two or more accumulate only when
+		// a property line's anchor and the anchored node's own anchor land on the same
+		// terminal node ("top: &node1" then "  &v val", both annotating the scalar) —
+		// which YAML rejects as a scalar / node with two anchors.
+		l.fail("node has more than one anchor")
+	}
 	for _, name := range anchors {
 		l.anchors[name] = v
 	}
@@ -1369,6 +1401,20 @@ func topColon(content string) int {
 		}
 	}
 	return -1
+}
+
+// validateTag rejects a shorthand / named tag that carries a flow-indicator
+// character (",", "[", "]", "{", "}"), which the tag grammar forbids: e.g. an
+// unterminated tag with a stray comma ("!!str,") or braces ("!invalid{}tag"). A
+// verbatim tag ("!<...>") may contain any URI character up to its ">" and is
+// exempt; an empty tag (no tag on the node) is nothing to check.
+func (l *loader) validateTag(tag string) {
+	if tag == "" || strings.HasPrefix(tag, "!<") {
+		return
+	}
+	if strings.ContainsAny(tag, ",[]{}") {
+		l.fail("invalid flow-indicator character in tag")
+	}
 }
 
 // splitTagAnchor peels a leading "!tag" and/or "&anchor" from a node's first line.
