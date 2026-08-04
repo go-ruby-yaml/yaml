@@ -154,7 +154,16 @@ var yamlTestSuite embed.FS
 // must start on the following line; the explicit "? key" / ": value" compact-sequence
 // construct KK5P stays valid on its own path) and any content other than a comment
 // after the document-end marker ("... invalid" 3HFZ). Baseline now 396/402 (98.51%),
-// accept 308/308, reject 88/94, 6 gaps. The remaining gaps break down as:
+// accept 308/308, reject 88/94, 6 gaps.
+// DIRECTIVE phase 2 (2026-08-04): a plain scalar may not begin with "%" (a directive
+// indicator), so a "%…" line in document-content position — not a directive, which
+// precedes the first "---" — is rejected ("%YAML 1.2" as a document's node, MUS6/01);
+// a "%…" folded in as a scalar CONTINUATION line (XLQ9) is unaffected. And a named tag
+// handle ("!prefix!") is now scoped to the document whose own directive block declares
+// it: a following document that references a handle it did not (re)declare rejects
+// (QLJ7), while a stream that re-declares "%TAG" before each document (5TYM) still
+// loads. Baseline now 398/402 (99.00%), accept 308/308, reject 90/94, 4 gaps.
+// The remaining gaps break down as:
 //   - Ill-formed input NOT rejected (~30): anchor/tag misuse (4JVG, CXX2, SR86,
 //     SU74, SY6V, U99R, LHL4), flow-collection edge cases (9MAG, CTN5, CVW2, G5U8,
 //     YJV2, C2SP, DK4H, ZXT5, CML9), stray comments (8XDJ, GDY7), directives
@@ -166,10 +175,9 @@ var yamlTestSuite embed.FS
 //
 // Each is a dedicated gap-closing target; the set may only shrink.
 var yamlSuiteKnownFailing = map[string]bool{
-	"8XDJ":    true,
-	"CML9":    true,
-	"GDY7":    true,
-	"MUS6/01": true, "QLJ7": true,
+	"8XDJ": true,
+	"CML9": true,
+	"GDY7": true,
 	"S98Z": true,
 }
 
