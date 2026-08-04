@@ -33,6 +33,7 @@ type line struct {
 	content string
 	raw     string
 	blank   bool
+	comment bool
 }
 
 // parseError is the sentinel a loader method panics with to reject a malformed
@@ -87,7 +88,7 @@ func (l *loader) checkTagHandleScope() {
 		active, pending, started = pending, map[string]bool{}, true
 	}
 	for _, ln := range l.lines {
-		if ln.blank {
+		if ln.blank || ln.comment {
 			continue
 		}
 		c := ln.content
@@ -144,8 +145,8 @@ func (l *loader) parseDirectives() {
 		l.checkDirective(l.lines[l.pos].content, &seenYAML)
 		saw = true
 		l.pos++
-		for l.pos < len(l.lines) && isBlankContent(l.lines[l.pos].content) {
-			l.pos++ // a blank or whitespace-only (e.g. a lone tab) line separates
+		for l.pos < len(l.lines) && (isBlankContent(l.lines[l.pos].content) || l.lines[l.pos].comment) {
+			l.pos++ // a blank / whitespace-only / whole-line-comment line separates directives
 		}
 	}
 	if !saw {
@@ -330,10 +331,16 @@ func (l *loader) tokenize(src string) {
 			}
 			break
 		}
+		indent := len(trimmed) - len(content)
 		if strings.HasPrefix(content, "#") {
+			// A whole-line comment is retained (not dropped) as a comment=true marker so
+			// the readers that care can observe it: it terminates a plain scalar, it is
+			// literal content inside a block scalar (a "#" is not a comment there), and it
+			// is otherwise skipped like a blank by every structural parser. Its indent is
+			// kept so the block-scalar reader can weigh it against the body indent.
+			l.lines = append(l.lines, line{indent: indent, content: content, raw: trimmed, comment: true})
 			continue
 		}
-		indent := len(trimmed) - len(content)
 		l.lines = append(l.lines, line{indent: indent, content: content, raw: trimmed})
 	}
 	// Trim trailing blank lines so a document is not seen as non-empty for them.
@@ -595,6 +602,13 @@ func (l *loader) gatherPlain(first string, minIndent int) string {
 	breaks := 0
 	for !sawComment && l.pos < len(l.lines) {
 		ln := l.lines[l.pos]
+		if ln.comment {
+			// A whole-line comment ends a plain scalar: its content may not continue
+			// past the comment. The lines below (if any) are then a separate node — at
+			// the document root that leaves trailing content the stream-end gate rejects
+			// (8XDJ: "key: word1" / "#  xxx" / "  word2").
+			break
+		}
 		if ln.blank {
 			breaks++
 			l.pos++
@@ -1113,7 +1127,13 @@ func (l *loader) gatherFlow(first string, minIndent int) (string, bool) {
 			out.WriteByte(c)
 			i++
 		}
-		l.skipBlanks()
+		sawComment := false
+		for l.pos < len(l.lines) && (l.lines[l.pos].blank || l.lines[l.pos].comment) {
+			if l.lines[l.pos].comment {
+				sawComment = true
+			}
+			l.pos++
+		}
 		if l.pos >= len(l.lines) {
 			l.fail("unterminated flow collection")
 		}
@@ -1125,6 +1145,18 @@ func (l *loader) gatherFlow(first string, minIndent int) (string, bool) {
 		}
 		multiLine = true
 		line = l.lines[l.pos].content
+		if sawComment {
+			// A whole-line comment ends any plain scalar it interrupts. If the flow was
+			// mid-value (the last emitted char is plain content, not a "," / "[" / "{")
+			// and the line after the comment resumes with plain content (not a "," / "]"
+			// / "}" / ":" separator), two entries have been joined with no comma between
+			// them ("[ word1", "#  xxx", "  word2 ]" — CML9).
+			last := strings.TrimRight(out.String(), " ")
+			if last != "" && !strings.ContainsRune(",[{", rune(last[len(last)-1])) &&
+				line != "" && !strings.ContainsRune(",]}:", rune(line[0])) {
+				l.fail("comment splits a flow scalar with no separating comma")
+			}
+		}
 		if len(stack) > 0 && stack[len(stack)-1] == '[' && line != "" && line[0] == ':' {
 			// Directly inside a flow SEQUENCE, a folded continuation line opening with
 			// ":" means an implicit-key flow pair was broken by a line break before its
@@ -1244,9 +1276,10 @@ func (l *loader) peek() *line {
 	return &l.lines[l.pos]
 }
 
-// skipBlanks advances the cursor past blank lines.
+// skipBlanks advances the cursor past blank and whole-line-comment lines — the lines
+// that carry no node and that every structural parser steps over.
 func (l *loader) skipBlanks() {
-	for l.pos < len(l.lines) && l.lines[l.pos].blank {
+	for l.pos < len(l.lines) && (l.lines[l.pos].blank || l.lines[l.pos].comment) {
 		l.pos++
 	}
 }
