@@ -98,35 +98,41 @@ var yamlTestSuite embed.FS
 // inline after ": " keeps its wrapped entries aligned under the "-" column. Both
 // are accept cases (Q9WF, 5WE3) already loading; consuming their full extent is the
 // last tail the trailing-content gate needs. Corpus steady at 353/402, accept
-// 308/308. The remaining gaps break down as:
-//   - Ill-formed input NOT rejected (~47): malformed block-structure YAML the
-//     loader still accepts — trailing content after a block document (236B, TD5N,
-//     6S55, 9CWY, BD7L, 7MNF), inconsistent block indentation (4HVU, 5U3A, DMG6,
-//     N4JP, U44R, ZVH3), anchor/tag misuse (4JVG, CXX2, G9HC, GT5M, H7J7, SR86,
+// 308/308.
+// TRAILING-CONTENT-GATE phase (2026-08-04): now that the property/comment/flow
+// features above consume the tails a well-formed document legitimately carries,
+// load() calls checkStreamEnd after the first document — any unconsumed line that
+// is not a following "---" document marker is trailing garbage and rejects the
+// stream. This graduates 19 ill-formed cases the loader had accepted: trailing
+// content after a block document (236B, TD5N, 6S55, 9CWY, BD7L, 7MNF), inconsistent
+// block indentation (4HVU, DMG6, N4JP, U44R, ZVH3), a bad block-scalar indent
+// (BF9H), anchor/tag misuse (G9HC, GT5M, H7J7), a stray comment (BS4K), and
+// multi-line key misuse (7LBH, D49Q, G7JE).
+// The gate was confirmed to keep accept at 308/308 (a full-corpus diff showed every
+// previously-valid document still loads). Baseline now 372/402 (92.54%), accept
+// 308/308, reject 64/94, 30 gaps. The remaining gaps break down as:
+//   - Ill-formed input NOT rejected (~30): anchor/tag misuse (4JVG, CXX2, SR86,
 //     SU74, SY6V, U99R, LHL4), flow-collection edge cases (9MAG, CTN5, CVW2, G5U8,
-//     YJV2, C2SP, DK4H, ZXT5, CML9), stray comments (8XDJ, BS4K, GDY7), multi-line
-//     quoted/plain keys (7LBH, D49Q, G7JE), directives (MUS6/01, QLJ7), and block-
-//     scalar content indentation (5LLU, S98Z, W9L4, 3HFZ, BF9H). Most need a block-
-//     document trailing-content gate, which is entangled with multi-line node
-//     properties (an anchor/tag on its own, possibly more-indented, line),
-//     comments in every position, and flow collections used as block keys — a
-//     separate initiative from scalar folding.
+//     YJV2, C2SP, DK4H, ZXT5, CML9), stray comments (8XDJ, GDY7), directives
+//     (MUS6/01, QLJ7), bad block-scalar content indentation (5LLU, S98Z, W9L4, 3HFZ),
+//     inconsistent indentation (5U3A) and the Y79Y/004-008 variants. These need
+//     finer structural validation than the coarse trailing-content gate.
 //   - Well-formed input NOT loaded: none — every well-formed corpus document now
 //     loads (accept 308/308).
 //
 // Each is a dedicated gap-closing target; the set may only shrink.
 var yamlSuiteKnownFailing = map[string]bool{
-	"236B": true, "3HFZ": true, "4HVU": true, "4JVG": true,
-	"5LLU": true, "5U3A": true, "6S55": true, "7LBH": true,
-	"7MNF": true, "8XDJ": true, "9CWY": true, "9MAG": true,
-	"BD7L": true, "BF9H": true, "BS4K": true, "C2SP": true, "CML9": true,
-	"CTN5": true, "CVW2": true, "CXX2": true, "D49Q": true, "DK4H": true,
-	"DMG6": true, "G5U8": true, "G7JE": true, "G9HC": true, "GDY7": true,
-	"GT5M": true, "H7J7": true, "LHL4": true,
-	"MUS6/01": true, "N4JP": true, "QLJ7": true,
-	"S98Z": true, "SR86": true, "SU74": true, "SY6V": true, "TD5N": true,
-	"U44R": true, "U99R": true, "W9L4": true, "Y79Y/004": true, "Y79Y/005": true,
-	"Y79Y/006": true, "Y79Y/007": true, "Y79Y/008": true, "YJV2": true, "ZVH3": true,
+	"3HFZ": true, "4JVG": true,
+	"5LLU": true, "5U3A": true,
+	"8XDJ": true, "9MAG": true,
+	"C2SP": true, "CML9": true,
+	"CTN5": true, "CVW2": true, "CXX2": true, "DK4H": true,
+	"G5U8": true, "GDY7": true,
+	"LHL4":    true,
+	"MUS6/01": true, "QLJ7": true,
+	"S98Z": true, "SR86": true, "SU74": true, "SY6V": true,
+	"U99R": true, "W9L4": true, "Y79Y/004": true, "Y79Y/005": true,
+	"Y79Y/006": true, "Y79Y/007": true, "Y79Y/008": true, "YJV2": true,
 	"ZXT5": true,
 }
 
