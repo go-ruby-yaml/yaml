@@ -6,6 +6,7 @@
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.26.4%2B-00ADD8)](https://go.dev/dl/)
 [![Coverage](https://img.shields.io/badge/coverage-100%25-1a7f37)](#tests--coverage)
+[![yaml-test-suite](https://img.shields.io/badge/yaml--test--suite-402%2F402-1a7f37)](https://github.com/yaml/yaml-test-suite)
 
 **A pure-Go (no cgo) reimplementation of Ruby's [Psych](https://docs.ruby-lang.org/en/master/Psych.html)
 YAML emitter and loader** — the deterministic, interpreter-independent core of
@@ -153,7 +154,14 @@ func (m *Map) Len() int
 
 ## Tests & coverage
 
-The suite pairs deterministic, ruby-free tests (which alone hold coverage at
+The loader is validated against the upstream
+[yaml-test-suite](https://github.com/yaml/yaml-test-suite) on its accept/reject
+axis and passes **all 402/402 tests** — **308/308 well-formed documents load** and
+**94/94 ill-formed inputs are rejected** (0 panics, 0 known gaps). Every case is
+run on every lane and the pass rate is held by a ratchet test that fails on any
+regression.
+
+The suite pairs those deterministic, ruby-free tests (which alone hold coverage at
 100%, so the qemu cross-arch and Windows lanes pass the gate) with a **differential
 MRI oracle**: a wide corpus is dumped here and parsed by the system `ruby`
 (`Psych.parse` + `YAML.unsafe_load`), and MRI-dumped documents are loaded here —
