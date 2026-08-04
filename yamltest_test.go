@@ -163,6 +163,13 @@ var yamlTestSuite embed.FS
 // it: a following document that references a handle it did not (re)declare rejects
 // (QLJ7), while a stream that re-declares "%TAG" before each document (5TYM) still
 // loads. Baseline now 398/402 (99.00%), accept 308/308, reject 90/94, 4 gaps.
+// COMMENT-KEY-SCAN phase (2026-08-04): the key/value separator scan now stops at a
+// whitespace-preceded "#" (a comment): a ":" beyond it is inside the comment, not a
+// mapping separator, so a line like "this is #not a: key" is a plain scalar, not a
+// mapping entry — and, following a complete mapping, it is trailing content the
+// stream-end gate rejects (GDY7). A "#" NOT preceded by whitespace stays an ordinary
+// scalar character ("this is#not: a" 2EBW still parses as a mapping). Baseline now
+// 399/402 (99.25%), accept 308/308, reject 91/94, 3 gaps.
 // The remaining gaps break down as:
 //   - Ill-formed input NOT rejected (~30): anchor/tag misuse (4JVG, CXX2, SR86,
 //     SU74, SY6V, U99R, LHL4), flow-collection edge cases (9MAG, CTN5, CVW2, G5U8,
@@ -177,7 +184,6 @@ var yamlTestSuite embed.FS
 var yamlSuiteKnownFailing = map[string]bool{
 	"8XDJ": true,
 	"CML9": true,
-	"GDY7": true,
 	"S98Z": true,
 }
 

@@ -1494,9 +1494,14 @@ func splitMapEntry(content string) (key, value string, ok bool) {
 // mapColon returns the index of the key/value separator ": " (or a trailing ":").
 // A quoted key is skipped as a whole leading span, so a ": " inside it is not
 // mistaken for the separator; a bare quote later in the line is an ordinary plain-
-// scalar character and is not treated as opening a quoted span.
+// scalar character and is not treated as opening a quoted span. A whitespace-preceded
+// "#" opens a comment and ends the scan: any ":" beyond it is inside the comment, not
+// a separator ("this is #not a: key" is a plain scalar, not a mapping entry — GDY7).
 func mapColon(content string) int {
 	for i := skipQuotedPrefix(content); i < len(content); i++ {
+		if content[i] == '#' && i > 0 && (content[i-1] == ' ' || content[i-1] == '\t') {
+			return -1
+		}
 		if content[i] == ':' && (i == len(content)-1 || content[i+1] == ' ' || content[i+1] == '\t') {
 			return i
 		}
