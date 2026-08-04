@@ -149,7 +149,12 @@ var yamlTestSuite embed.FS
 // reports whether an explicit indent digit was present so the check is skipped there
 // (an explicit indicator pins the content indent instead of auto-detecting it).
 // Baseline now 394/402 (98.01%), accept 308/308, reject 86/94, 8 gaps.
-// The remaining gaps break down as:
+// BLOCK-BOUNDARY phase (2026-08-04): two block-structure boundary checks now reject a
+// block sequence opened on the same line as its "key:" ("key: - a" 5U3A — the "- x"
+// must start on the following line; the explicit "? key" / ": value" compact-sequence
+// construct KK5P stays valid on its own path) and any content other than a comment
+// after the document-end marker ("... invalid" 3HFZ). Baseline now 396/402 (98.51%),
+// accept 308/308, reject 88/94, 6 gaps. The remaining gaps break down as:
 //   - Ill-formed input NOT rejected (~30): anchor/tag misuse (4JVG, CXX2, SR86,
 //     SU74, SY6V, U99R, LHL4), flow-collection edge cases (9MAG, CTN5, CVW2, G5U8,
 //     YJV2, C2SP, DK4H, ZXT5, CML9), stray comments (8XDJ, GDY7), directives
@@ -161,8 +166,6 @@ var yamlTestSuite embed.FS
 //
 // Each is a dedicated gap-closing target; the set may only shrink.
 var yamlSuiteKnownFailing = map[string]bool{
-	"3HFZ":    true,
-	"5U3A":    true,
 	"8XDJ":    true,
 	"CML9":    true,
 	"GDY7":    true,
