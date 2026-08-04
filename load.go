@@ -240,7 +240,9 @@ func (l *loader) tokenize(src string) {
 	for _, raw := range strings.Split(src, "\n") {
 		trimmed := strings.TrimRight(raw, "\r")
 		content := strings.TrimLeft(trimmed, " ")
-		if content == "" {
+		if strings.TrimLeft(content, "\t") == "" {
+			// A whitespace-only line (spaces and/or tabs) carries no node — it is a
+			// blank line, significant only as a paragraph break inside a block scalar.
 			l.lines = append(l.lines, line{blank: true, raw: trimmed})
 			continue
 		}
@@ -319,6 +321,14 @@ func (l *loader) parseBlockScalar(style, chomp byte, parentIndent int) Value {
 			// A blank line is a paragraph break inside the block (its raw text, after
 			// stripping the base indent, is empty); a trailing blank was already
 			// trimmed by tokenize so this never runs past the block's end.
+			if bodyIndent < 0 && strings.ContainsRune(ln.raw, '\t') &&
+				leadingSpaces(ln.raw) <= parentIndent {
+				// A tab within the block scalar's indentation zone — no deeper than the
+				// parent's indent, before any content line has fixed the body indent — is
+				// a tab used for indentation, which YAML forbids. A tab further right (on
+				// a more-indented line) is ordinary content.
+				l.fail("found a tab character used for indentation")
+			}
 			body = append(body, "")
 			l.pos++
 			continue
@@ -365,6 +375,12 @@ func (l *loader) parseNode(minIndent int) Value {
 	l.skipBlanks()
 	ln := l.lines[l.pos]
 	tag, anchorName, content := splitTagAnchor(ln.content)
+	if strings.HasPrefix(content, "#") {
+		// What is left of a node line after its tag/anchor cannot begin with a bare
+		// "#": a whitespace-preceded "#" opened a comment, so the node has no inline
+		// content (e.g. "key: &a # comment" carries only the anchor).
+		content = ""
+	}
 	if content == "" {
 		l.lines[l.pos].content = ""
 		l.pos++
@@ -396,10 +412,213 @@ func (l *loader) parseNode(minIndent int) Value {
 			// (When the flow is a mapping key its ": value" legitimately follows.)
 			l.checkStreamEnd()
 		}
+	} else if !strings.HasPrefix(content, "*") {
+		// A plain or quoted scalar may fold across continuation lines; an alias
+		// (`*name`) is always a single token and is left untouched.
+		content = l.gatherScalar(content, minIndent)
 	}
 	v := l.scalarValue(content, tag)
 	l.bind(anchorName, v)
 	return v
+}
+
+// isDocMarker reports whether a line's content is a document-boundary marker —
+// "---" / "..." or those followed by more text ("--- x", "... x"). A quoted or
+// plain scalar may not fold across such a line.
+func isDocMarker(content string) bool {
+	for _, m := range []string{"---", "..."} {
+		if content == m || strings.HasPrefix(content, m+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+// gatherScalar folds the continuation lines of the plain or single/double-quoted
+// scalar that opened on the just-consumed line into one logical scalar token,
+// advancing the cursor past every line it absorbs. minIndent is the least
+// indentation a continuation line may occupy (the containing block's indent, or 0
+// at the document root). A quoted scalar that never closes, and a plain
+// continuation line that reintroduces a "key: " mapping pair, reject the document.
+func (l *loader) gatherScalar(first string, minIndent int) string {
+	if first[0] == '"' || first[0] == '\'' {
+		return l.gatherQuoted(first, first[0], minIndent)
+	}
+	return l.gatherPlain(first, minIndent)
+}
+
+// gatherPlain folds a plain (unquoted) multi-line scalar. Per the YAML line-folding
+// rules a single line break between non-empty lines folds to a space and each blank
+// line in a run contributes one literal newline; leading and trailing whitespace on
+// each folded line is stripped. A whitespace-preceded "#" opens a comment that ends
+// the scalar. A continuation line carrying a top-level "key: " separator is a
+// mapping fused into the scalar, which block YAML forbids, and is rejected.
+func (l *loader) gatherPlain(first string, minIndent int) string {
+	head, sawComment := splitPlainComment(first)
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(head, " \t"))
+	breaks := 0
+	for !sawComment && l.pos < len(l.lines) {
+		ln := l.lines[l.pos]
+		if ln.blank {
+			breaks++
+			l.pos++
+			continue
+		}
+		if ln.indent < minIndent || isDocMarker(ln.content) ||
+			(ln.indent == 0 && strings.HasPrefix(ln.content, "%")) {
+			// A dedent ends the scalar; a document marker or a column-0 "%…" directive
+			// line is a stream construct, never plain-scalar continuation.
+			break
+		}
+		body, cmt := splitPlainComment(ln.content)
+		body = strings.TrimRight(strings.TrimLeft(body, " \t"), " \t")
+		if topColon(body) >= 0 {
+			l.fail("mapping key in a multi-line plain scalar")
+		}
+		if breaks == 0 {
+			b.WriteByte(' ')
+		} else {
+			b.WriteString(strings.Repeat("\n", breaks))
+		}
+		b.WriteString(body)
+		breaks = 0
+		sawComment = cmt
+		l.pos++
+	}
+	return b.String()
+}
+
+// splitPlainComment splits a plain-scalar line at a whitespace-preceded "#"
+// comment, returning the content before it and whether a comment was found. A "#"
+// not preceded by whitespace is an ordinary scalar character.
+func splitPlainComment(s string) (head string, hasComment bool) {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '#' && i > 0 && (s[i-1] == ' ' || s[i-1] == '\t') {
+			return s[:i], true
+		}
+	}
+	return s, false
+}
+
+// gatherQuoted folds a single- or double-quoted scalar (quote byte q) that may
+// span several physical lines, returning a synthetic single-line token — the
+// interior with each physical break folded to a space (blank lines to newlines,
+// and, for a double-quoted scalar, a trailing "\" eliding the break entirely) — re-
+// wrapped in its quotes for the scalar decoder. A scalar that never closes, or one
+// broken by a document marker, is rejected as unterminated; junk after the closing
+// quote on its line is rejected as trailing content.
+func (l *loader) gatherQuoted(first string, q byte, minIndent int) string {
+	interior, trailer, closed := scanQuote(first[1:], q)
+	if closed {
+		l.checkQuoteTrailer(trailer)
+		return string(q) + interior + string(q)
+	}
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(interior, " \t"))
+	breaks := 0
+	for {
+		if l.pos >= len(l.lines) {
+			l.fail("unterminated quoted scalar")
+		}
+		ln := l.lines[l.pos]
+		if ln.blank {
+			breaks++
+			l.pos++
+			continue
+		}
+		if ln.indent < minIndent || isDocMarker(ln.content) {
+			l.fail("unterminated quoted scalar")
+		}
+		l.pos++
+		lineText := strings.TrimLeft(ln.content, " \t")
+		seg, trail, done := scanQuote(lineText, q)
+		if q == '"' && breaks == 0 && strings.HasSuffix(b.String(), "\\") && !endsEscaped(b.String()) {
+			// A double-quoted line ending in a lone backslash is an escaped line
+			// break: drop the backslash and join with no separator.
+			cur := b.String()
+			b.Reset()
+			b.WriteString(cur[:len(cur)-1])
+		} else if breaks == 0 {
+			b.WriteByte(' ')
+		} else {
+			b.WriteString(strings.Repeat("\n", breaks))
+		}
+		breaks = 0
+		if done {
+			b.WriteString(strings.TrimRight(seg, " \t"))
+			// Preserve trailing space directly before the closing quote.
+			b.WriteString(trailingSpace(seg))
+			l.checkQuoteTrailer(trail)
+			return string(q) + b.String() + string(q)
+		}
+		b.WriteString(strings.TrimRight(seg, " \t"))
+	}
+}
+
+// leadingSpaces counts the run of spaces at the start of s (its space indentation,
+// stopping at the first non-space — a tab included).
+func leadingSpaces(s string) int {
+	n := 0
+	for n < len(s) && s[n] == ' ' {
+		n++
+	}
+	return n
+}
+
+// trailingSpace returns the run of spaces/tabs at the end of s (the whitespace a
+// quoted scalar preserves immediately before its closing quote).
+func trailingSpace(s string) string {
+	i := len(s)
+	for i > 0 && (s[i-1] == ' ' || s[i-1] == '\t') {
+		i--
+	}
+	return s[i:]
+}
+
+// endsEscaped reports whether s ends with an escaped backslash ("\\"), i.e. the
+// final backslash is itself escaped and so is not a line-continuation marker.
+func endsEscaped(s string) bool {
+	n := 0
+	for i := len(s) - 1; i >= 0 && s[i] == '\\'; i-- {
+		n++
+	}
+	return n%2 == 0
+}
+
+// scanQuote scans a quoted-scalar fragment (text is the line content after the
+// opening quote on the first line, or a whole continuation line) for the closing
+// quote q, honouring "\\" / '\"' escapes in double quotes and "”" in single
+// quotes. It returns the interior up to (excluding) the close, the trailer after
+// it, and whether the quote closed on this fragment.
+func scanQuote(text string, q byte) (interior, trailer string, closed bool) {
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if q == '"' && c == '\\' {
+			i++ // skip the escaped character
+			continue
+		}
+		if c == q {
+			if q == '\'' && i+1 < len(text) && text[i+1] == '\'' {
+				i++ // "''" is an escaped quote, not a close
+				continue
+			}
+			return text[:i], text[i+1:], true
+		}
+	}
+	return text, "", false
+}
+
+// checkQuoteTrailer rejects junk after a quoted scalar's closing quote. Only
+// trailing whitespace and a whitespace-preceded "# comment" are allowed; a mapping
+// "key: value" whose key is quoted is split before this point, so a ":" trailer
+// never reaches here.
+func (l *loader) checkQuoteTrailer(after string) {
+	trimmed := strings.TrimLeft(after, " \t")
+	if trimmed == "" || (trimmed[0] == '#' && len(after) > len(trimmed)) {
+		return
+	}
+	l.fail("trailing content after quoted scalar")
 }
 
 // parseBlock parses the block that follows a standalone tag / anchor.
@@ -484,14 +703,14 @@ func (l *loader) parseMapping(indent int, tag string) Value {
 		if strings.TrimSpace(val) == "" {
 			l.pos++
 			if next := l.peek(); next != nil && (next.indent > indent || (next.indent == indent && isSeqEntry(next.content))) {
-				h.Set(key, l.parseNode(indent))
+				h.Set(key, l.parseNode(indent+1))
 			} else {
 				h.Set(key, nil)
 			}
 			continue
 		}
 		val = strings.TrimSpace(val)
-		if _, _, body := splitTagAnchor(val); topColon(body) >= 0 {
+		if _, _, body := splitTagAnchor(val); !strings.HasPrefix(body, "*") && topColon(body) >= 0 {
 			// An inline value that still holds a "key: " separator at the top level is
 			// a second mapping entry fused onto the first without a line break —
 			// "a: b: c", "a: 'b': c" — which block YAML does not allow. topColon skips
@@ -549,7 +768,7 @@ func (l *loader) explicitValue(indent int) Value {
 	if rest == "" {
 		l.pos++
 		if next := l.peek(); next != nil && (next.indent > indent || (next.indent == indent && isSeqEntry(next.content))) {
-			return l.parseNode(indent)
+			return l.parseNode(indent + 1)
 		}
 		return nil
 	}
@@ -990,27 +1209,41 @@ func splitMapEntry(content string) (key, value string, ok bool) {
 	return key, value, true
 }
 
-// mapColon returns the index of the key/value separator at the top flow level.
+// mapColon returns the index of the key/value separator ": " (or a trailing ":").
+// A quoted key is skipped as a whole leading span, so a ": " inside it is not
+// mistaken for the separator; a bare quote later in the line is an ordinary plain-
+// scalar character and is not treated as opening a quoted span.
 func mapColon(content string) int {
-	var quote byte
-	for i := 0; i < len(content); i++ {
-		c := content[i]
-		if quote != 0 {
-			if c == quote {
-				quote = 0
-			}
-			continue
-		}
-		switch c {
-		case '\'', '"':
-			quote = c
-		case ':':
-			if i == len(content)-1 || content[i+1] == ' ' {
-				return i
-			}
+	for i := skipQuotedPrefix(content); i < len(content); i++ {
+		if content[i] == ':' && (i == len(content)-1 || content[i+1] == ' ') {
+			return i
 		}
 	}
 	return -1
+}
+
+// skipQuotedPrefix returns the index just past a leading single- or double-quoted
+// span (honouring "\\"/'\"' and "”" escapes), or 0 when content does not open
+// with a quote. An unterminated leading quote consumes the whole string.
+func skipQuotedPrefix(content string) int {
+	if content == "" || (content[0] != '\'' && content[0] != '"') {
+		return 0
+	}
+	q := content[0]
+	for i := 1; i < len(content); i++ {
+		if q == '"' && content[i] == '\\' {
+			i++
+			continue
+		}
+		if content[i] == q {
+			if q == '\'' && i+1 < len(content) && content[i+1] == '\'' {
+				i++
+				continue
+			}
+			return i + 1
+		}
+	}
+	return len(content)
 }
 
 // topColon is like mapColon but also skips flow-collection interiors: it returns
@@ -1019,18 +1252,8 @@ func mapColon(content string) int {
 // plain inline value without counting the pairs inside a nested flow collection.
 func topColon(content string) int {
 	depth := 0
-	var quote byte
-	for i := 0; i < len(content); i++ {
-		c := content[i]
-		if quote != 0 {
-			if c == quote {
-				quote = 0
-			}
-			continue
-		}
-		switch c {
-		case '\'', '"':
-			quote = c
+	for i := skipQuotedPrefix(content); i < len(content); i++ {
+		switch content[i] {
 		case '[', '{':
 			depth++
 		case ']', '}':

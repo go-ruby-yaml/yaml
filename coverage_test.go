@@ -153,12 +153,16 @@ func TestLoadDoubleQuoteEscapes(t *testing.T) {
 		`--- "a\x41b"`: "aAb",
 		`--- "a\qb"`:   "aqb", // unknown escape drops the backslash
 		`--- "a\xZZb"`: "axZZb",
-		`--- "end\"`:   `end\`, // trailing lone backslash kept verbatim
 	}
 	for s, want := range cases {
 		if v := mustLoad(t, s+"\n"); !eqValue(v, want) {
 			t.Errorf("Load(%q) = %#v, want %q", s, v, want)
 		}
+	}
+	// A double-quoted scalar whose only closing quote is escaped ("end\"") never
+	// terminates and is rejected, matching Psych/libyaml.
+	if _, err := Load(`--- "end\"` + "\n"); err == nil {
+		t.Errorf(`Load(--- "end\") accepted, want unterminated-scalar rejection`)
 	}
 	// A short \x with too few digits keeps the 'x'.
 	if v := mustLoad(t, "--- \"a\\x4\"\n"); !eqValue(v, "ax4") {
@@ -167,6 +171,38 @@ func TestLoadDoubleQuoteEscapes(t *testing.T) {
 	// A NUL escape.
 	if v := mustLoad(t, "--- \"a\\0b\"\n"); !eqValue(v, "a\x00b") {
 		t.Errorf("nul escape = %#v", v)
+	}
+}
+
+// TestMultilineScalarFolding pins the byte-exact folded value of plain and
+// single/double-quoted scalars that span several lines: a single line break folds
+// to a space, a blank line to a newline, per-line surrounding whitespace is
+// stripped, and a double-quote trailing "\" elides the break entirely.
+func TestMultilineScalarFolding(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"a\nb\nc\n", "a b c"},                                         // root plain, breaks to spaces
+		{"- foo\n  bar\n", "foo bar"},                                  // plain value under a seq entry
+		{"plain: a\n b\n\n c\n", "a b\nc"},                             // break->space, blank->newline
+		{"k:\n  one two\n  three\n", "one two three"},                  // block-mapping plain value
+		{"'a\n  b'\n", "a b"},                                          // single-quoted fold
+		{"\"So does this\n  scalar.\\n\"\n", "So does this scalar.\n"}, // double-quoted fold + escape
+		{"\" x\n\n y \n\tz \"\n", " x\ny z "},                          // leading/trailing kept, blank->NL, tab line
+		{"canonical: !!binary \"\\\n foo\\\n bar\"\n", "foobar"},       // '\'-eol line continuation
+	}
+	for _, c := range cases {
+		v := mustLoad(t, c.in)
+		got := v
+		if m, ok := v.(*Map); ok {
+			got = m.pairs[0].Val
+		} else if a, ok := v.([]any); ok {
+			got = a[0]
+		}
+		if !eqValue(got, c.want) {
+			t.Errorf("Load(%q) folded = %#v, want %q", c.in, got, c.want)
+		}
 	}
 }
 
