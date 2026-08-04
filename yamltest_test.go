@@ -141,7 +141,15 @@ var yamlTestSuite embed.FS
 // explicit-value indicator followed by a tab (":\t-" Y79Y/007). A tab before a plain
 // scalar or an empty entry ("- \tfoo", "- \t" Y79Y/010, "foo: |\n \t" Y79Y/001) stays
 // valid separation. Baseline now 392/402 (97.51%), accept 308/308, reject 84/94,
-// 10 gaps. The remaining gaps break down as:
+// 10 gaps.
+// BLOCK-SCALAR-INDENT phase (2026-08-04): with auto-detected block-scalar
+// indentation (no explicit indent indicator), a leading empty line more-indented than
+// the first non-empty content line is now rejected ("|"/">" then spaces-only lines
+// wider than the first content line — 5LLU, W9L4). The block-scalar header parse now
+// reports whether an explicit indent digit was present so the check is skipped there
+// (an explicit indicator pins the content indent instead of auto-detecting it).
+// Baseline now 394/402 (98.01%), accept 308/308, reject 86/94, 8 gaps.
+// The remaining gaps break down as:
 //   - Ill-formed input NOT rejected (~30): anchor/tag misuse (4JVG, CXX2, SR86,
 //     SU74, SY6V, U99R, LHL4), flow-collection edge cases (9MAG, CTN5, CVW2, G5U8,
 //     YJV2, C2SP, DK4H, ZXT5, CML9), stray comments (8XDJ, GDY7), directives
@@ -153,14 +161,13 @@ var yamlTestSuite embed.FS
 //
 // Each is a dedicated gap-closing target; the set may only shrink.
 var yamlSuiteKnownFailing = map[string]bool{
-	"3HFZ": true,
-	"5LLU": true, "5U3A": true,
+	"3HFZ":    true,
+	"5U3A":    true,
 	"8XDJ":    true,
 	"CML9":    true,
 	"GDY7":    true,
 	"MUS6/01": true, "QLJ7": true,
 	"S98Z": true,
-	"W9L4": true,
 }
 
 // safeLoad calls Load, converting a panic into a flagged result so one broken
