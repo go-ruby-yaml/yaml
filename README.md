@@ -55,6 +55,38 @@ CGO-free, dependency-free, **100% test coverage**, `gofmt` + `go vet` clean, and
 green across the six 64-bit Go targets (amd64, arm64, riscv64, loong64, ppc64le,
 s390x).
 
+## Relationship to gopkg.in/yaml.v3
+
+The obvious question — *why hand-roll a YAML parser instead of layering the Ruby
+value model over the reference [`gopkg.in/yaml.v3`](https://pkg.go.dev/gopkg.in/yaml.v3)?*
+— was answered by a **control run** (yaml.v3 v3.0.1) that fed the reference parser's
+`Node` tree into this package's own scalar-resolution and `!ruby/*` tag mapping, then
+replayed the emitter corpus and the full `yaml/yaml-test-suite` (402 tests). The
+reference is a spec-compliant **YAML 1.2** implementation; Psych is bug-for-bug
+**YAML 1.1** — and the two diverge in ways that break the load-bearing contract:
+
+- **The emitter cannot move.** `yaml.Marshal(2.0)` and `yaml.Marshal(2)` both emit
+  `"2"` — yaml.v3 has no way to keep a Ruby `Float 2.0` distinct from `Integer 2`,
+  so a persisted `Float` would silently become an `Integer` on the next round-trip.
+  This package's emitter writes `2.0` vs `2`, which is exactly what rbgo's
+  `require "yaml"` state / run-summary persistence depends on.
+- **No Ruby value model.** yaml.v3 decodes `:name` to the String `":name"` (no
+  `Symbol`) and has no `!ruby/object:` / `!ruby/range` reconstruction.
+- **The parser cannot move either.** Swapping the hand-rolled block parser for
+  yaml.v3 changed **115 accept/reject verdicts** on the suite — **61 regressions**
+  against the required Psych verdict versus 54 fixes, a net conformance loss that
+  also breaks the shrink-only ratchet. yaml.v3 *rejects* documents Psych accepts (a
+  `%YAML 1.2` directive, a nil-keyed explicit mapping) and *accepts* malformed
+  block structure Psych rejects (a stray flow close, junk after a flow collection),
+  in both directions, so no fallback combinator recovers parity.
+
+The reference round-trips **100 %** of *this* emitter's output — that equivalence is
+real and reassuring — but it is not a drop-in replacement for the Psych-faithful
+parser or emitter. These invariants are pinned by `TestPsychModelInvariants`
+(`psychmodel_invariants_test.go`); see it before proposing a wrap. This mirrors the
+sibling verdict for [go-ruby-hcl2](https://github.com/go-ruby-hcl2/hcl2) (the Ruby
+value model does not fit `zclconf/go-cty`).
+
 ## Install
 
 ```sh
