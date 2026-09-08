@@ -710,3 +710,52 @@ func TestCanonForms(t *testing.T) {
 		t.Fatalf("map with slice key/val: %v", err)
 	}
 }
+
+// TestATabMayNotIndentABlockSequence closes the one shape that slipped between
+// two checks.
+//
+// The tokenizer strips only leading SPACES, so a line written with a tab keeps
+// it in its content. parseMapping refuses a sibling entry on that, which is why
+// "\tfoo: 1", "a:\n\t- x" and "foo:\n\tbar: 1" were already rejected. A node at
+// the head of a document reached no such check, and isSeqEntry looks for a
+// leading "-" and found the tab -- so "\t- x" was not a sequence entry at all
+// and fell through to the plain-scalar path, loading as the STRING "- x".
+//
+// go-puppet/puppet found it: parseyaml("\t- x") is expected to fail there, and
+// stopped failing when it moved to a build carrying this package.
+//
+// The rule is deliberately narrow. A tab before a FLOW node is an ACCEPT case of
+// the yaml-test-suite this package is measured against -- 6CA3 is "\t[\n\t]",
+// Q5MG is "\t{}" -- and so is a tab after a space of indentation (DK95/00,
+// "foo:\n \tbar"). Ruby's Psych and PyYAML reject all three, being libyaml
+// underneath, and that disagreement is a choice of reference rather than a
+// defect. Only the case the suite is SILENT about is closed here, so the 402/402
+// conformance is untouched.
+func TestATabMayNotIndentABlockSequence(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		in      string
+		wantErr bool
+	}{
+		{"a tab before a block sequence", "\t- x", true},
+		{"a tab before a nested block sequence", "a:\n\t- x", true},
+		{"a tab before a mapping key", "\tfoo: 1", true},
+		{"spaces before a block sequence", "  - x", false},
+		{"no leading whitespace at all", "- x", false},
+		// The three the yaml-test-suite accepts, kept here so a future tightening
+		// has to face them rather than discover them.
+		{"a tab before a flow sequence (6CA3)", "\t[\n\t]", false},
+		{"a tab before a flow mapping (Q5MG)", "\t{}", false},
+		{"a tab after a space of indent (DK95/00)", "foo:\n \tbar", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(tc.in)
+			if tc.wantErr && err == nil {
+				t.Fatalf("Load(%q) succeeded, want a tab-indentation error", tc.in)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("Load(%q) failed: %v", tc.in, err)
+			}
+		})
+	}
+}
