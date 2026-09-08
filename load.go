@@ -486,6 +486,21 @@ func (l *loader) parseNode(minIndent int) Value {
 func (l *loader) parseNodeProps(minIndent int, inTag string, inAnchors []string) Value {
 	l.skipBlanks()
 	ln := l.lines[l.pos]
+	if isSeqEntry(strings.TrimLeft(ln.content, "\t")) && ln.content != "" && ln.content[0] == '\t' {
+		// The tokenizer strips only leading SPACES, so a node whose content still
+		// opens with a tab used that tab for indentation. A BLOCK SEQUENCE may not be
+		// indented that way -- "\t- x" came out as the plain scalar "- x", because
+		// isSeqEntry looks for a leading "-" and found the tab, so the line was not a
+		// sequence entry at all and fell through to the scalar path.
+		//
+		// Narrow on purpose. A tab before a FLOW node is legal in the yaml-test-suite
+		// this package is measured against -- 6CA3 is "\t[\n\t]" and Q5MG is "\t{}",
+		// both accept cases -- and so is a tab after a space of indentation (DK95/00).
+		// Ruby's Psych and PyYAML reject all three, being libyaml underneath; that
+		// disagreement is not this change's to settle, so only the case the suite is
+		// SILENT about is closed here.
+		l.fail("found a tab character used for indentation")
+	}
 	tag, anchorName, content := splitTagAnchor(ln.content)
 	l.validateTag(tag)
 	if tag == "" {
