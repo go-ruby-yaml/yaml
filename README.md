@@ -128,15 +128,29 @@ order, and `Load` always returns mappings as `*yaml.Map` so key order round-trip
 // Object#to_yaml). A value outside the model returns an error.
 func Dump(v any, opts ...Option) (string, error)
 
-// Load parses a Psych-compatible document (Psych.load / YAML.load).
+// Load parses a Psych-compatible document (Psych.load / YAML.load). It applies
+// NO allow-list and will materialise any class the document names: it is
+// Psych.unsafe_load's counterpart.
 func Load(s string) (any, error)
 
-// SafeLoad parses like Load but honours a permitted-class allow-list; this loader
-// never evaluates code, so it is safe by construction.
+// SafeLoad parses like Load, then enforces Psych.safe_load's restriction. It
+// ALWAYS restricts: with no options it permits no class at all, which is
+// Psych.safe_load's own default (permitted_classes: []). The restriction covers
+// everything Psych's class loader gates -- Symbol (values and keys), time.Time,
+// Range, Regexp and the class named by a !ruby/class tag -- not just
+// !ruby/object:. An unpermitted class is reported as a *DisallowedClassError;
+// it is never degraded to a plain mapping.
 func SafeLoad(s string, opts ...Option) (any, error)
 
 func WithPermittedClasses(names ...string) Option // Psych permitted_classes:
-func WithAliases(allowed bool) Option             // Psych aliases:
+func WithPermittedSymbols(names ...string) Option // Psych permitted_symbols:
+func WithAliases(allowed bool) Option             // Psych aliases: (default false)
+
+// SafeLoad's refusals. Each message is its Psych exception's own, so a host
+// binding can surface it verbatim.
+type DisallowedClassError   struct { Name   string } // Psych::DisallowedClass
+type AliasesNotEnabledError struct{}                 // Psych::AliasesNotEnabled
+type AnchorNotDefinedError  struct { Anchor string } // Psych::AnchorNotDefined
 
 type Symbol string
 type Class  string
