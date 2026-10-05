@@ -22,6 +22,14 @@ type loader struct {
 	lines   []line
 	pos     int
 	anchors map[string]Value
+	// usedAlias records that a `*alias` was dereferenced, and undefAlias the name
+	// of the first `*alias` with no matching anchor. Load resolves aliases
+	// unconditionally; SafeLoad needs to know an alias was USED because
+	// Psych.safe_load refuses aliases unless aliases: true is passed, and a
+	// resolved graph cannot be asked after the fact (a scalar alias is
+	// indistinguishable from a repeated literal once resolved).
+	usedAlias  bool
+	undefAlias string
 }
 
 // line is one physical input line split into its leading indentation and the
@@ -51,26 +59,42 @@ func (l *loader) fail(msg string) { panic(parseError{msg: msg}) }
 // marker-only document loads as nil (Psych's empty-document behaviour). A
 // malformed document is rejected with a *SyntaxError; the parser never panics on
 // input, however adversarial (see parseError).
-func load(src string) (v Value, err error) {
+func load(src string) (Value, error) {
+	v, _, err := loadReport(src)
+	return v, err
+}
+
+// aliasReport says what the parse did with `&anchor` / `*alias` references, so
+// SafeLoad can apply Psych's aliases: policy. The parse itself never refuses an
+// alias -- that is a safe-load decision, not a syntax one.
+type aliasReport struct {
+	// used is true when at least one alias was dereferenced.
+	used bool
+	// undefined names the first alias with no matching anchor ("" when none).
+	undefined string
+}
+
+// loadReport is load plus the alias report.
+func loadReport(src string) (v Value, ar aliasReport, err error) {
 	l := &loader{anchors: map[string]Value{}}
 	defer func() {
 		if r := recover(); r != nil {
 			// Only a parseError is a graceful rejection; the unchecked assertion
 			// re-raises anything else so a genuine bug is never silently swallowed.
-			v, err = nil, &SyntaxError{Message: r.(parseError).msg}
+			v, ar, err = nil, aliasReport{}, &SyntaxError{Message: r.(parseError).msg}
 		}
 	}()
 	l.tokenize(src)
 	l.skipBlanks()
 	l.parseDirectives()
 	if l.pos >= len(l.lines) {
-		return nil, nil
+		return nil, aliasReport{}, nil
 	}
 	v = l.parseDocument()
 	l.checkNoTrailingDirective()
 	l.checkStreamEnd()
 	l.checkTagHandleScope()
-	return v, nil
+	return v, aliasReport{used: l.usedAlias, undefined: l.undefAlias}, nil
 }
 
 // checkTagHandleScope enforces that a named tag handle ("!prefix!") is only used in a
@@ -1042,8 +1066,13 @@ func inlineNodeIndent(ln line, marker string) int {
 func (l *loader) scalarValue(s string, tag string) Value {
 	s = strings.TrimSpace(s)
 	if strings.HasPrefix(s, "*") {
-		if v, ok := l.anchors[strings.TrimSpace(s[1:])]; ok {
+		name := strings.TrimSpace(s[1:])
+		if v, ok := l.anchors[name]; ok {
+			l.usedAlias = true
 			return v
+		}
+		if l.undefAlias == "" {
+			l.undefAlias = name
 		}
 		return nil
 	}

@@ -5,6 +5,7 @@
 package yaml
 
 import (
+	"errors"
 	"math"
 	"math/big"
 	"reflect"
@@ -646,48 +647,261 @@ func TestAsBigInt(t *testing.T) {
 	}
 }
 
-// TestSafeLoad checks the permitted-classes restriction and option plumbing.
+// TestSafeLoad checks the permitted-classes restriction. Every assertion here
+// is POSITIVE -- the refusal is reported as an error naming the class -- where
+// the test this replaces asserted that an unpermitted object came back as a
+// *Map ("unpermitted Secret should be a Map"), and that SafeLoad with no
+// allow-list kept every object. Both were assertions of the defect: SafeLoad
+// degraded instead of refusing, and read a nil allow-list as "permit all".
 func TestSafeLoad(t *testing.T) {
 	src := "---\nobj: !ruby/object:Secret\n  x: 1\nok: !ruby/object:Allowed\n  y: 2\n"
-	v, err := SafeLoad(src, WithPermittedClasses("Allowed"), WithAliases(true))
+	// An unpermitted class is an ERROR naming it, not a silently rewritten value.
+	_, err := SafeLoad(src, WithPermittedClasses("Allowed"))
+	var dce *DisallowedClassError
+	if !errors.As(err, &dce) || dce.Name != "Secret" {
+		t.Fatalf("SafeLoad = %v, want DisallowedClassError{Secret}", err)
+	}
+	if got, want := err.Error(), "Tried to load unspecified class: Secret"; got != want {
+		t.Errorf("message = %q, want %q (Psych::DisallowedClass's own)", got, want)
+	}
+	// Permitting both materialises both as objects.
+	v, err := SafeLoad(src, WithPermittedClasses("Allowed", "Secret"))
 	if err != nil {
-		t.Fatalf("SafeLoad: %v", err)
+		t.Fatalf("SafeLoad both: %v", err)
 	}
 	m := v.(*Map)
-	secret, _ := m.Get("obj")
-	if _, ok := secret.(*Map); !ok {
-		t.Errorf("unpermitted Secret should be a Map, got %T", secret)
+	for _, k := range []string{"obj", "ok"} {
+		got, _ := m.Get(k)
+		if _, ok := got.(*Object); !ok {
+			t.Errorf("%s = %T, want *Object", k, got)
+		}
 	}
-	sm := secret.(*Map)
-	if xv, _ := sm.Get(Symbol("x")); !eqValue(xv, int64(1)) {
-		t.Errorf("restricted ivar = %#v", xv)
+	// Repeated calls accumulate, so the two spellings agree.
+	if _, err := SafeLoad(src, WithPermittedClasses("Allowed"), WithPermittedClasses("Secret")); err != nil {
+		t.Errorf("accumulated allow-list: %v", err)
 	}
-	allowed, _ := m.Get("ok")
-	if _, ok := allowed.(*Object); !ok {
-		t.Errorf("permitted Allowed should stay an Object, got %T", allowed)
-	}
-	// Without permitted classes, all objects stay objects.
-	v2, _ := SafeLoad(src)
-	m2 := v2.(*Map)
-	if o, _ := m2.Get("obj"); func() bool { _, ok := o.(*Object); return !ok }() {
-		t.Error("no allow-list should keep objects")
-	}
-	// SafeLoad restriction recurses into sequences and ranges.
-	src2 := "---\n- !ruby/object:Secret\n  z: 1\n"
-	v3, _ := SafeLoad(src2, WithPermittedClasses("None"))
-	if _, ok := v3.([]any)[0].(*Map); !ok {
-		t.Error("seq element should be restricted to Map")
+	// The walk reaches sequence elements and range bounds.
+	if _, err := SafeLoad("---\n- !ruby/object:Secret\n  z: 1\n", WithPermittedClasses("None")); !errors.As(err, &dce) {
+		t.Errorf("seq element not checked: %v", err)
 	}
 }
 
-// TestSafeLoadError checks SafeLoad propagates a load error (there is none for
-// this loader, so we exercise the empty-permitted no-op path and a nested range).
-func TestSafeLoadRangeRestrict(t *testing.T) {
-	src := "--- !ruby/range\nbegin: !ruby/object:Secret\n  a: 1\nend: 2\nexcl: false\n"
-	v, _ := SafeLoad(src, WithPermittedClasses("X"))
-	r := v.(*Range)
-	if _, ok := r.Begin.(*Map); !ok {
-		t.Errorf("range begin should be restricted, got %T", r.Begin)
+// TestSafeLoadDenyEverything is the case the old plumbing got wrong and nobody
+// tries by hand. WithPermittedClasses() with ZERO names is the most restrictive
+// request the API can express; it appended nothing to a nil slice, and the guard
+// `if o.permittedClasses != nil` then read that nil as "no policy" and permitted
+// EVERY class. SafeLoad with no options at all took the same branch.
+//
+// Both must now refuse, and they must refuse identically -- there is no longer a
+// state in which SafeLoad does not restrict.
+func TestSafeLoadDenyEverything(t *testing.T) {
+	src := "--- !ruby/object:Gadget\nfoo: bar\n"
+	for _, c := range []struct {
+		name string
+		opts []Option
+	}{
+		{"no options", nil},
+		{"zero names", []Option{WithPermittedClasses()}},
+		{"zero names twice", []Option{WithPermittedClasses(), WithPermittedClasses()}},
+		{"symbols only", []Option{WithPermittedSymbols("foo")}},
+		{"aliases only", []Option{WithAliases(true)}},
+	} {
+		v, err := SafeLoad(src, c.opts...)
+		var dce *DisallowedClassError
+		if !errors.As(err, &dce) || dce.Name != "Gadget" {
+			t.Errorf("%s: SafeLoad = (%#v, %v), want DisallowedClassError{Gadget}", c.name, v, err)
+		}
+	}
+	// Load is the unrestricted entry point and must be unaffected.
+	v, err := Load(src)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if o, ok := v.(*Object); !ok || o.Class != "Gadget" {
+		t.Errorf("Load = %#v, want *Object{Gadget}", v)
+	}
+}
+
+// TestSafeLoadGatesMoreThanObjectTags checks the restriction covers what Psych's
+// class loader covers, not only `!ruby/object:`. A loader that refused tagged
+// objects while interning Symbols and building Times would be half a policy.
+func TestSafeLoadGatesMoreThanObjectTags(t *testing.T) {
+	for _, c := range []struct {
+		src, want string
+		permit    []string
+	}{
+		{src: "--- :foo\n", want: "Symbol"},
+		{src: "- :foo\n", want: "Symbol"},
+		{src: ":foo: 1\n", want: "Symbol"}, // a symbol KEY is checked too
+		{src: "--- !ruby/symbol foo\n", want: "Symbol"},
+		{src: "--- 2001-12-14 21:59:43 -05:00\n", want: "Time"},
+		{src: "a: 2001-12-14 21:59:43 -05:00\n", want: "Time"},
+		{src: "--- !ruby/regexp /ab/i\n", want: "Regexp"},
+		{src: "--- !ruby/class 'String'\n", want: "String"}, // the NAMED class
+		{src: "--- !ruby/module 'Kernel'\n", want: "Kernel"},
+	} {
+		_, err := SafeLoad(c.src, WithPermittedClasses(c.permit...))
+		var dce *DisallowedClassError
+		if !errors.As(err, &dce) || dce.Name != c.want {
+			t.Errorf("SafeLoad(%q) = %v, want DisallowedClassError{%s}", c.src, err, c.want)
+			continue
+		}
+		// Naming it permits it.
+		if _, err := SafeLoad(c.src, WithPermittedClasses(c.want)); err != nil {
+			t.Errorf("SafeLoad(%q) permitting %s: %v", c.src, c.want, err)
+		}
+	}
+	// Plain scalars and the containers themselves never consult the allow-list,
+	// which is why psych.rb can call String / Integer / Array / Hash "permitted by
+	// default" while Restricted holds none of their names.
+	if _, err := SafeLoad("a: [1, 2.5, true, null, 'x']\n"); err != nil {
+		t.Errorf("plain document refused: %v", err)
+	}
+}
+
+// TestSafeLoadPermittedSymbols checks the permitted_symbols: narrowing, and the
+// asymmetry that makes it easy to get wrong: an EMPTY permitted_symbols narrows
+// nothing (Restricted#symbolize short-circuits on @symbols.empty?), while an
+// empty permitted_classes permits nothing. Narrowing is also never a substitute
+// for the class check.
+func TestSafeLoadPermittedSymbols(t *testing.T) {
+	var dce *DisallowedClassError
+	// Symbol permitted, no narrowing: any name loads.
+	if v, err := SafeLoad("--- :zz\n", WithPermittedClasses("Symbol"), WithPermittedSymbols()); err != nil || v != Symbol("zz") {
+		t.Errorf("empty narrowing = (%#v, %v), want :zz", v, err)
+	}
+	// Symbol permitted, narrowed: only the named name loads.
+	if v, err := SafeLoad("--- :foo\n", WithPermittedClasses("Symbol"), WithPermittedSymbols("foo")); err != nil || v != Symbol("foo") {
+		t.Errorf("narrowed hit = (%#v, %v)", v, err)
+	}
+	if _, err := SafeLoad("--- :bar\n", WithPermittedClasses("Symbol"), WithPermittedSymbols("foo")); !errors.As(err, &dce) || dce.Name != "Symbol" {
+		t.Errorf("narrowed miss = %v", err)
+	}
+	// Narrowing WITHOUT permitting Symbol refuses everything: the name check
+	// passes and the class check does not.
+	if _, err := SafeLoad("--- :foo\n", WithPermittedSymbols("foo")); !errors.As(err, &dce) || dce.Name != "Symbol" {
+		t.Errorf("symbols without the class = %v", err)
+	}
+}
+
+// TestSafeLoadAliases checks Psych's aliases: policy. The loader resolves
+// aliases unconditionally -- it has to, to build the graph -- so SafeLoad is
+// told whether one was USED, because a resolved graph cannot be asked after the
+// fact: a scalar alias is indistinguishable from a repeated literal.
+func TestSafeLoadAliases(t *testing.T) {
+	for _, src := range []string{
+		"a: &x 1\nb: *x\n",       // scalar alias: no shared pointer to notice
+		"a: &x\n  k: 1\nb: *x\n", // mapping alias
+		"a: &x k\n*x : 1\n",      // alias in KEY position
+	} {
+		if _, err := SafeLoad(src); !errors.As(err, new(*AliasesNotEnabledError)) {
+			t.Errorf("SafeLoad(%q) = %v, want AliasesNotEnabledError", src, err)
+		}
+		if _, err := SafeLoad(src, WithAliases(true)); err != nil {
+			t.Errorf("SafeLoad(%q, aliases) = %v", src, err)
+		}
+	}
+	// An anchor with no alias referencing it is not alias USE.
+	if _, err := SafeLoad("a: &x 1\n"); err != nil {
+		t.Errorf("unused anchor refused: %v", err)
+	}
+	// An alias naming an anchor the document never defines resolved to nil,
+	// turning a broken reference into a null value.
+	var ande *AnchorNotDefinedError
+	if _, err := SafeLoad("b: *nope\n", WithAliases(true)); !errors.As(err, &ande) || ande.Anchor != "nope" {
+		t.Errorf("undefined anchor = %v", err)
+	}
+	// An aliased UNPERMITTED object is still refused, and the shared pointer is
+	// walked once rather than sending the walk round in circles.
+	_, err := SafeLoad("a: &x !ruby/object:Secret\n  k: 1\nb: *x\n", WithAliases(true))
+	if !errors.As(err, new(*DisallowedClassError)) {
+		t.Errorf("aliased unpermitted object = %v", err)
+	}
+	// ... and permitted, it loads as one shared object.
+	v, err := SafeLoad("a: &x !ruby/object:Ok\n  k: 1\nb: *x\n", WithAliases(true), WithPermittedClasses("Ok"))
+	if err != nil {
+		t.Fatalf("aliased permitted object: %v", err)
+	}
+	m := v.(*Map)
+	av, _ := m.Get("a")
+	bv, _ := m.Get("b")
+	if av != bv {
+		t.Errorf("alias did not share: %p vs %p", av, bv)
+	}
+}
+
+// TestSafeLoadRange checks the restriction over a `!ruby/range`: the Range
+// class itself, and both bounds, which carry arbitrary values.
+func TestSafeLoadRange(t *testing.T) {
+	var dce *DisallowedClassError
+	const src = "--- !ruby/range\nbegin: 1\nend: 5\nexcl: false\n"
+	if _, err := SafeLoad(src); !errors.As(err, &dce) || dce.Name != "Range" {
+		t.Errorf("range = %v, want DisallowedClassError{Range}", err)
+	}
+	v, err := SafeLoad(src, WithPermittedClasses("Range"))
+	if err != nil {
+		t.Fatalf("permitted range: %v", err)
+	}
+	if r, ok := v.(*Range); !ok || !eqValue(r.Begin, int64(1)) || !eqValue(r.End, int64(5)) {
+		t.Errorf("range = %#v", v)
+	}
+	// Permitting Range does not permit what its BOUNDS name. Both ends are
+	// walked, so a disallowed value in either is reported.
+	for _, bad := range []string{
+		"--- !ruby/range\nbegin: :s\nend: 5\nexcl: false\n",
+		"--- !ruby/range\nbegin: 1\nend: :s\nexcl: false\n",
+	} {
+		if _, err := SafeLoad(bad, WithPermittedClasses("Range")); !errors.As(err, &dce) || dce.Name != "Symbol" {
+			t.Errorf("SafeLoad(%q) = %v, want DisallowedClassError{Symbol}", bad, err)
+		}
+	}
+}
+
+// TestSafeLoadObjectIVarsWalked checks a PERMITTED object does not launder what
+// its instance variables name -- the gadget would otherwise only need one
+// permitted wrapper.
+func TestSafeLoadObjectIVarsWalked(t *testing.T) {
+	src := "--- !ruby/object:Ok\nx: !ruby/object:Secret\n  y: 1\n"
+	_, err := SafeLoad(src, WithPermittedClasses("Ok"))
+	var dce *DisallowedClassError
+	if !errors.As(err, &dce) || dce.Name != "Secret" {
+		t.Errorf("ivar = %v, want DisallowedClassError{Secret}", err)
+	}
+	if _, err := SafeLoad(src, WithPermittedClasses("Ok", "Secret")); err != nil {
+		t.Errorf("both permitted: %v", err)
+	}
+}
+
+// TestSafeLoadNamelessObjectIsObject checks a `!ruby/object:` with no class name
+// is gated as "Object", which is what Psych reports: ClassLoader#load returns
+// nil for an empty name and to_ruby.rb:244 falls back to class_loader.object.
+// Measured against MRI 4.0.5, which answers "Tried to load unspecified class:
+// Object" for both spellings.
+func TestSafeLoadNamelessObjectIsObject(t *testing.T) {
+	var dce *DisallowedClassError
+	for _, src := range []string{"--- !ruby/object\nfoo: 1\n", "--- !ruby/object:\nfoo: 1\n"} {
+		if _, err := SafeLoad(src); !errors.As(err, &dce) || dce.Name != "Object" {
+			t.Errorf("SafeLoad(%q) = %v, want DisallowedClassError{Object}", src, err)
+		}
+		if _, err := SafeLoad(src, WithPermittedClasses("Object")); err != nil {
+			t.Errorf("SafeLoad(%q) permitting Object: %v", src, err)
+		}
+	}
+}
+
+// TestSafeLoadErrorMessages pins the three error messages on Psych's own
+// wording, because a host binding surfaces them verbatim as
+// Psych::DisallowedClass / Psych::AliasesNotEnabled / Psych::AnchorNotDefined
+// (psych/exception.rb:10-27).
+func TestSafeLoadErrorMessages(t *testing.T) {
+	for _, c := range []struct{ got, want string }{
+		{(&DisallowedClassError{Name: "Gadget"}).Error(), "Tried to load unspecified class: Gadget"},
+		{(&AliasesNotEnabledError{}).Error(), "Alias parsing was not enabled. To enable it, pass `aliases: true` to `Psych::load` or `Psych::safe_load`."},
+		{(&AnchorNotDefinedError{Anchor: "nope"}).Error(), "An alias referenced an unknown anchor: nope"},
+	} {
+		if c.got != c.want {
+			t.Errorf("message = %q, want %q", c.got, c.want)
+		}
 	}
 }
 
